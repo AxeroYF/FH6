@@ -882,39 +882,28 @@ class FH_UltimateBot(ctk.CTk):
         # === 全新的横向迷你UI设计 ===
         self.mini_frame = ctk.CTkFrame(self, fg_color="#111827", corner_radius=8)
 
-        # 1. 日志区 (最左侧，占据主要伸缩空间)
-        self.mini_log_box = ctk.CTkTextbox(
-            self.mini_frame,
-            state="disabled",
-            wrap="word",
-            font=ctk.CTkFont(size=13),
-            fg_color="#18202B",
-            corner_radius=8,
-        )
-        self.mini_log_box.pack(side="left", fill="both", expand=True, padx=(10, 5), pady=10)
+        # 运行时尽量少遮挡游戏画面：只保留状态和核心控制，不显示日志。
+        self.mini_info_frame = ctk.CTkFrame(self.mini_frame, fg_color="transparent")
+        self.mini_info_frame.pack(side="left", fill="both", expand=True, padx=(8, 4), pady=6)
 
-        # 2. 信息区 (垂直排列任务状态和耗时)
-        self.mini_info_frame = ctk.CTkFrame(self.mini_frame, fg_color="#18202B", corner_radius=8)
-        self.mini_info_frame.pack(side="left", fill="y", padx=5, pady=10)
+        self.lbl_mini_task = ctk.CTkLabel(self.mini_info_frame, text="任务: 等待中", font=ctk.CTkFont(size=12, weight="bold"), text_color="#58A6FF")
+        self.lbl_mini_task.grid(row=0, column=0, sticky="w", padx=0, pady=(0, 1))
 
-        self.lbl_mini_task = ctk.CTkLabel(self.mini_info_frame, text="当前任务: 等待中", font=ctk.CTkFont(size=14, weight="bold"), text_color="#3498DB")
-        self.lbl_mini_task.pack(pady=(8, 2), padx=10, anchor="w")
+        self.lbl_mini_prog = ctk.CTkLabel(self.mini_info_frame, text="进度: 0 / 0", font=ctk.CTkFont(size=11))
+        self.lbl_mini_prog.grid(row=1, column=0, sticky="w", padx=0, pady=0)
 
-        self.lbl_mini_prog = ctk.CTkLabel(self.mini_info_frame, text="任务进度: 0 / 0", font=ctk.CTkFont(size=13))
-        self.lbl_mini_prog.pack(pady=2, padx=10, anchor="w")
+        self.lbl_mini_loop = ctk.CTkLabel(self.mini_info_frame, text="循环: 0 / 0", font=ctk.CTkFont(size=11))
+        self.lbl_mini_loop.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=0)
 
-        self.lbl_mini_loop = ctk.CTkLabel(self.mini_info_frame, text="大循环: 0 / 0", font=ctk.CTkFont(size=13))
-        self.lbl_mini_loop.pack(pady=2, padx=10, anchor="w")
+        self.lbl_mini_time = ctk.CTkLabel(self.mini_info_frame, text="00:00:00", font=ctk.CTkFont(size=11))
+        self.lbl_mini_time.grid(row=2, column=0, columnspan=2, sticky="w", padx=0, pady=(0, 1))
 
-        self.lbl_mini_time = ctk.CTkLabel(self.mini_info_frame, text="总耗时: 00:00:00", font=ctk.CTkFont(size=13))
-        self.lbl_mini_time.pack(pady=2, padx=10, anchor="w")
-        # 3. 按钮区 (靠右排列)
-        self.btn_mini_stop = ctk.CTkButton(self.mini_frame, text="停止 (F8)", fg_color="#DA3633", hover_color="#B02A37", width=92, corner_radius=8, font=ctk.CTkFont(weight="bold"), command=self.stop_all)
-        self.btn_mini_stop.pack(side="left", fill="y", padx=5, pady=10)
+        self.btn_mini_stop = ctk.CTkButton(self.mini_frame, text="停", fg_color="#DA3633", hover_color="#B02A37", width=38, height=50, corner_radius=7, font=ctk.CTkFont(size=13, weight="bold"), command=self.stop_all)
+        self.btn_mini_stop.pack(side="left", fill="y", padx=(2, 4), pady=8)
 
         # ====== 【新增】迷你面板上的暂停按钮 ======
-        self.btn_mini_pause = ctk.CTkButton(self.mini_frame, text="暂停 (F9)", fg_color="#F1C40F", hover_color="#D4AC0D", text_color="#111827", width=92, corner_radius=8, font=ctk.CTkFont(weight="bold"), command=self.toggle_pause)
-        self.btn_mini_pause.pack(side="left", fill="y", padx=(5, 10), pady=10)
+        self.btn_mini_pause = ctk.CTkButton(self.mini_frame, text="暂", fg_color="#F1C40F", hover_color="#D4AC0D", text_color="#111827", width=38, height=50, corner_radius=7, font=ctk.CTkFont(size=13, weight="bold"), command=self.toggle_pause)
+        self.btn_mini_pause.pack(side="left", fill="y", padx=(0, 8), pady=8)
 
 
         self.bottom_frame = ctk.CTkFrame(self, fg_color="transparent", height=260)
@@ -954,9 +943,8 @@ class FH_UltimateBot(ctk.CTk):
         hrs = elapsed // 3600
         mins = (elapsed % 3600) // 60
         secs = elapsed % 60
-        time_str = f"总耗时: {hrs:02d}:{mins:02d}:{secs:02d}"
         try:
-            self.lbl_mini_time.configure(text=time_str)
+            self.lbl_mini_time.configure(text=f"{hrs:02d}:{mins:02d}:{secs:02d}")
         except Exception: pass
         
         if self.is_running:
@@ -965,9 +953,9 @@ class FH_UltimateBot(ctk.CTk):
     def update_running_ui(self, task_name="", current_val=0, max_val=0):
         try:
             if task_name:
-                self.ui_call(self.lbl_mini_task.configure, text=f"当前任务: {task_name}")
+                self.ui_call(self.lbl_mini_task.configure, text=f"任务: {task_name}")
             if max_val > 0:
-                self.ui_call(self.lbl_mini_prog.configure, text=f"执行进度: {current_val} / {max_val}")
+                self.ui_call(self.lbl_mini_prog.configure, text=f"进度: {current_val}/{max_val}")
         except Exception:
             pass
 
@@ -1113,12 +1101,6 @@ class FH_UltimateBot(ctk.CTk):
                 self.log_box.insert("end", full_msg + "\n")
                 self.log_box.see("end")
                 self.log_box.configure(state="disabled")
-                # 同时写入迷你界面的横向日志
-                if hasattr(self, "mini_log_box"):
-                    self.mini_log_box.configure(state="normal")
-                    self.mini_log_box.insert("end", full_msg + "\n")
-                    self.mini_log_box.see("end")
-                    self.mini_log_box.configure(state="disabled")
             except Exception:
                 pass
         self.ui_call(write_ui)
@@ -1140,19 +1122,16 @@ class FH_UltimateBot(ctk.CTk):
         # 显示新的迷你横向 UI
         self.mini_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # ====== 计算 15% 高度 40% 宽度 ======
+        # ====== 运行监视窗：尽量小，避免遮挡游戏识别区域 ======
         last_x, last_y, last_w, last_h = self.regions["全界面"]
         if last_w <= 0: last_w = self.winfo_screenwidth()
         if last_h <= 0: last_h = self.winfo_screenheight()
 
-        calc_w = int(last_w * 0.40)
-        calc_h = int(last_h * 0.15)
-        # 设置一个兜底最小值，防止分辨率过低时文字挤压导致崩溃
-        calc_w = max(calc_w, 650)
-        calc_h = max(calc_h, 150)
+        calc_w = min(max(int(last_w * 0.16), 300), 380)
+        calc_h = min(max(int(last_h * 0.065), 72), 88)
 
-        pos_x = last_x + last_w - calc_w - 20
-        pos_y = last_y + 20
+        pos_x = last_x + last_w - calc_w - 8
+        pos_y = last_y + 8
 
         self.attributes("-topmost", True)
         self.geometry(f"{calc_w}x{calc_h}+{pos_x}+{pos_y}")
@@ -1182,7 +1161,7 @@ class FH_UltimateBot(ctk.CTk):
                 total_loops = self.config.get("global_loops", 10)
             self.global_loop_current = 1
             if hasattr(self, "lbl_mini_loop"):
-                self.ui_call(self.lbl_mini_loop.configure, text=f"大循环: {self.global_loop_current} / {total_loops}")
+                self.ui_call(self.lbl_mini_loop.configure, text=f"循环: {self.global_loop_current}/{total_loops}")
 
             # 【新增】：全局连续失败计数器
             continuous_failures = 0 
@@ -1255,7 +1234,7 @@ class FH_UltimateBot(ctk.CTk):
                     self.log(f"开启新一轮大循环 ({self.global_loop_current}/{total_loops})")
                     
                     if hasattr(self, "lbl_mini_loop"):
-                        self.ui_call(self.lbl_mini_loop.configure, text=f"大循环: {self.global_loop_current} / {total_loops}")
+                        self.ui_call(self.lbl_mini_loop.configure, text=f"循环: {self.global_loop_current}/{total_loops}")
 
                     self.race_counter = 0
                     self.car_counter = 0
@@ -1375,11 +1354,11 @@ class FH_UltimateBot(ctk.CTk):
                 pass
             # 改变按钮UI
             if hasattr(self, "btn_mini_pause"):
-                self.ui_call(self.btn_mini_pause.configure, text="继续 (F9)", fg_color="#2EA043", hover_color="#238636", text_color="#FFFFFF")
+                self.ui_call(self.btn_mini_pause.configure, text="续", fg_color="#2EA043", hover_color="#238636", text_color="#FFFFFF")
         else:
             self.log("▶ 任务已恢复")
             if hasattr(self, "btn_mini_pause"):
-                self.ui_call(self.btn_mini_pause.configure, text="暂停 (F9)", fg_color="#F1C40F", hover_color="#D4AC0D", text_color="#111827")
+                self.ui_call(self.btn_mini_pause.configure, text="暂", fg_color="#F1C40F", hover_color="#D4AC0D", text_color="#111827")
 
     def check_pause(self):
         """核心阻塞器：任何动作前调用此方法，如果是暂停状态，将在此无限等待"""
@@ -1518,14 +1497,12 @@ class FH_UltimateBot(ctk.CTk):
                     # ====== 【修改】：小窗口精准吸附所在显示器的右上角 ======
                     def snap_to_game():
                         if self.is_running:
-                            calc_w = int(mw * 0.40)
-                            calc_h = int(mh * 0.15)
-                            calc_w = max(calc_w, 650)
-                            calc_h = max(calc_h, 150)
+                            calc_w = min(max(int(mw * 0.16), 300), 380)
+                            calc_h = min(max(int(mh * 0.065), 72), 88)
                             
-                            # 放置在当前显示器的右上角（预留20像素边距）
-                            pos_x = mx + mw - calc_w - 20
-                            pos_y = my + 20
+                            # 放置在当前显示器的右上角，尽量贴边减少遮挡。
+                            pos_x = mx + mw - calc_w - 8
+                            pos_y = my + 8
                             self.geometry(f"{calc_w}x{calc_h}+{pos_x}+{pos_y}")
                     self.ui_call(snap_to_game)
                     # ==========================================
@@ -3189,7 +3166,7 @@ class FH_UltimateBot(ctk.CTk):
 
         self.update_running_ui("F3测试找图", 0, 12)
         if hasattr(self, "lbl_mini_loop"):
-            self.ui_call(self.lbl_mini_loop.configure, text="大循环: 测试模式")
+            self.ui_call(self.lbl_mini_loop.configure, text="测图模式")
 
         self.start_time = time.time()
         self.update_timer()
