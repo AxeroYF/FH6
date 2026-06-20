@@ -1454,23 +1454,37 @@ class ImageMatcherMixin:
             return None
 
     def wait_for_new_consumable_car_strict(self, timeout=3, interval=0.2):
+        ai_enabled = self.config.get("ai_assist", False)
+        ai_first = ai_enabled and self.config.get("ai_prefer", False)
+        save_debug = self.config.get("ai_auto_capture", False)
+
+        if self.is_running and ai_first:
+            pos = self.find_new_consumable_car_ai(
+                region=self.regions["全界面"],
+                save_miss=save_debug,
+            )
+            if pos:
+                return pos
+
         start = time.time()
         while self.is_running and time.time() - start < timeout:
             pos = self.find_new_consumable_car_strict(region=self.regions["全界面"], save_miss=False)
             if pos:
                 return pos
             time.sleep(interval)
-        if self.is_running and self.config.get("ai_assist", False):
+
+        if self.is_running and ai_enabled and not ai_first:
             pos = self.find_new_consumable_car_ai(
                 region=self.regions["全界面"],
-                save_miss=self.config.get("ai_auto_capture", False),
+                save_miss=save_debug,
             )
             if pos:
                 return pos
+
         if self.is_running:
             return self.find_new_consumable_car_strict(
                 region=self.regions["全界面"],
-                save_miss=self.config.get("ai_auto_capture", False),
+                save_miss=save_debug,
             )
         return None
 

@@ -218,8 +218,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         super().__init__()
         #窗口相关
         self.title(f"FH6Auto by Krami v{CURRENT_VERSION}")
-        self.geometry("1360x760")
-        self.minsize(1180, 700)
+        self.geometry("1480x800")
+        self.minsize(1320, 760)
         self.attributes("-topmost", False)
         self.attributes("-alpha", 0.98)
         self.resizable(True, True)
@@ -286,10 +286,12 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.center_window()
 
         self.log("免责声明：本脚本仅供 Python 自动化技术交流与学习使用。请勿用于商业盈利或破坏游戏平衡，因使用本脚本造成的账号封禁等损失，由使用者自行承担。")
-        self.log("工具运行目录不要有中文")
-        self.log("默认刷图车辆：【斯巴鲁Impreza 22B-STi Version】【调校S2  900】【保持默认涂装】【收藏车辆】")
-        self.log("启动前先将键盘设置为【英文键盘】")
-        self.log("游戏设置为【自动转向】【自动挡】，游戏语言设置为【简体中文】")
+        self.log("因为是个人优化开发，测试条件以及能适配的设备有限，遇到难以解决的兼容性问题，敬请谅解")
+        self.log("默认刷图车辆：【斯巴鲁Impreza 22B-STi Version】【调校S2-834】【保持默认涂装】【收藏车辆】")
+        self.log("蓝图代码可自行修改")
+        self.log("默认分辨率为1080P，请勿开启HDR，以免影响图片识别。工具运行目录不要有中文。")
+        self.log("游戏设置为【自动转向】【手动挡】，游戏语言设置为【简体中文】")
+        self.log("ai版自带一个预训练模型。点击【AI辅助】开启，然后再点击【AI优先】，可以优先使用ai模型选车，兼容性可能比模板检测更好")
         self.log("大部分以图像识别作为引导，减少机器盲目操作的风险，但仍无法完全避免，使用前请做好准备")
 
     # ==========================================
@@ -394,6 +396,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             "restart_cmd": "start steam://run/2483190",
             "race_timeout": 300,
             "ai_assist": False,
+            "ai_prefer": False,
             "ai_auto_capture": False,
             "ai_model_path": "models/fh6_car_select_yolo.pt"
         }
@@ -437,6 +440,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.config["auto_restart"] = self.config.get("auto_restart", False)
         if hasattr(self, "var_ai_assist"):
             self.config["ai_assist"] = self.var_ai_assist.get()
+        if hasattr(self, "var_ai_prefer"):
+            self.config["ai_prefer"] = self.var_ai_prefer.get()
         if hasattr(self, "var_ai_auto_capture"):
             self.config["ai_auto_capture"] = self.var_ai_auto_capture.get()
         if hasattr(self, "le_restart_cmd"):
@@ -720,6 +725,12 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             self.yolo_car_select_model_path = None
         self.save_config()
         self.log("AI assist enabled." if enabled else "AI assist disabled.")
+
+    def on_ai_prefer_changed(self):
+        enabled = bool(self.var_ai_prefer.get())
+        self.config["ai_prefer"] = enabled
+        self.save_config()
+        self.log("AI first enabled." if enabled else "AI first disabled.")
 
     def on_ai_auto_capture_changed(self):
         enabled = bool(self.var_ai_auto_capture.get())
@@ -2194,6 +2205,120 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
     # ==========================================
     # --- 模块：抽奖 ---
     # ==========================================
+    def enter_design_paint_choose_car(self):
+        pos_designpaint = self.wait_for_any_image_gray(
+            ["designpaint-w.png", "designpaint-b.png"],
+            region=self.regions["全界面"],
+            threshold=0.62,
+            timeout=10,
+            interval=0.25,
+            fast_mode=False
+        )
+        if not pos_designpaint:
+            self.log("[CJ] 未找到 designpaint 按钮。")
+            return False
+
+        self.game_click(pos_designpaint)
+        time.sleep(1.0)
+
+        pos_choosecar = self.wait_for_any_image_gray(
+            ["choosecar.png", "choosecar-b.png"],
+            region=self.regions["全界面"],
+            threshold=0.62,
+            timeout=2,
+            interval=0.25,
+            fast_mode=False
+        )
+        if not pos_choosecar:
+            self.log("[CJ] 未看到 choosecar，尝试确认设计编辑器提示。")
+            self.hw_press("enter")
+            time.sleep(1.5)
+            pos_choosecar = self.wait_for_any_image_gray(
+                ["choosecar.png", "choosecar-b.png"],
+                region=self.regions["全界面"],
+                threshold=0.62,
+                timeout=10,
+                interval=0.25,
+                fast_mode=False
+            )
+        if not pos_choosecar:
+            self.log("[CJ] 未找到 choosecar 按钮。")
+            return False
+
+        self.game_click(pos_choosecar)
+        time.sleep(1.5)
+        return True
+
+    def select_new_consumable_car_from_list(self):
+        self.hw_press("backspace")
+        time.sleep(1.0)
+
+        brand_pos = None
+        for _ in range(30):
+            if not self.is_running:
+                return False
+
+            brand_pos = self.wait_for_any_image_gray(
+                ["CCbrand.png"],
+                region=self.regions["全界面"],
+                threshold=0.75,
+                timeout=0.8,
+                interval=0.2,
+                fast_mode=True
+            )
+            if brand_pos:
+                break
+
+            self.hw_press("up")
+            time.sleep(0.25)
+
+        if not brand_pos:
+            self.log("选品牌失败")
+            return False
+
+        self.game_click(brand_pos)
+        time.sleep(1.0)
+        jump_pages = max(0, self.memory_car_page - 1)
+
+        if jump_pages > 0:
+            self.log(f"智能记忆触发：快速跳过前 {jump_pages} 页...")
+            for _ in range(jump_pages):
+                if not self.is_running:
+                    return False
+                for _ in range(4):
+                    self.hw_press("right", delay=0.06)
+                    time.sleep(0.1)
+                time.sleep(0.15)
+
+        found_car = False
+        current_page = jump_pages
+
+        for _ in range(85 - jump_pages):
+            if not self.is_running:
+                return False
+            pos_target = self.wait_for_new_consumable_car_strict(timeout=1.5, interval=0.2)
+
+            if pos_target:
+                self.game_click(pos_target)
+                found_car = True
+                self.memory_car_page = current_page
+                self.log(f"锁定目标车辆！已记录当前页码: {current_page}")
+                break
+
+            for _ in range(4):
+                self.hw_press("right", delay=0.06)
+                time.sleep(0.1)
+            time.sleep(0.4)
+            current_page += 1
+
+        if not found_car:
+            self.log("列表中未找到目标车辆，重置记忆页码。")
+            self.memory_car_page = 0
+            return False
+
+        time.sleep(1.2)
+        return True
+
     def logic_super_wheelspin(self, target_count):
         if self.cj_counter >= target_count:
             return True
@@ -2242,74 +2367,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         while self.cj_counter < target_count:
             if not self.is_running:
                 return False
-            self.log("进入我的车辆.")
-            if not self.enter_my_cars_from_vehicle_menu():
+            self.log("通过 designpaint 进入选择车辆界面.")
+            if not self.enter_design_paint_choose_car():
                 return False
-            self.hw_press("backspace")
-            time.sleep(1.0)
-
-            brand_pos = None
-            for _ in range(30):
-                if not self.is_running:
-                    return False
-
-                brand_pos = self.wait_for_any_image_gray(
-                    ["CCbrand.png"],
-                    region=self.regions["全界面"],
-                    threshold=0.75,
-                    timeout=0.8,
-                    interval=0.2,
-                    fast_mode=True
-                )
-                if brand_pos:
-                    break
-
-                self.hw_press("up")
-                time.sleep(0.25)
-
-            if not brand_pos:
-                self.log("选品牌失败")
-                return False
-
-            self.game_click(brand_pos)
-            time.sleep(1.0)
-            jump_pages = max(0, self.memory_car_page - 1)
-
-            if jump_pages > 0:
-                self.log(f"智能记忆触发：快速跳过前 {jump_pages} 页...")
-                for _ in range(jump_pages):
-                    if not self.is_running: return False
-                    for _ in range(4):
-                        self.hw_press("right", delay=0.06)
-                        time.sleep(0.1)
-                    time.sleep(0.15) # 给一点点动画缓冲时间
-            pos_target = None
-            found_car = False
-            current_page = jump_pages # 记录当前所在的真实页码
-
-            # 最大翻页次数扣除已经跳过的页数
-            for _ in range(85 - jump_pages):
-                if not self.is_running:
-                    return False
-                pos_target = self.wait_for_new_consumable_car_strict(timeout=1.5, interval=0.2)
-
-                if pos_target:
-                    self.game_click(pos_target)
-                    found_car = True
-                    # 记住这次找到车是在哪一页
-                    self.memory_car_page = current_page
-                    self.log(f"锁定目标车辆！已记录当前页码: {current_page}")
-                    break
-
-                # 翻下一页
-                for _ in range(4):
-                    self.hw_press("right", delay=0.06)
-                    time.sleep(0.1)
-                time.sleep(0.4)
-                current_page += 1
-            if not found_car:
-                self.log("列表中未找到目标车辆，重置记忆页码。")
-                self.memory_car_page = 0 # 没找到说明车刷完了，清零记忆
+            if not self.select_new_consumable_car_from_list():
                 return False
             time.sleep(1.2)
             self.log("尝试寻找'上车'按钮...")

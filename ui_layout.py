@@ -87,6 +87,7 @@ def setup_ui(bot):
     bot.var_chk2 = ctk.BooleanVar(value=bot.config["chk_2"])
     bot.var_chk3 = ctk.BooleanVar(value=bot.config["chk_3"])
     bot.var_ai_assist = ctk.BooleanVar(value=bot.config.get("ai_assist", False))
+    bot.var_ai_prefer = ctk.BooleanVar(value=bot.config.get("ai_prefer", False))
     bot.var_ai_auto_capture = ctk.BooleanVar(value=bot.config.get("ai_auto_capture", False))
     bot.var_auto_restart = ctk.BooleanVar(value=False)
 
@@ -95,12 +96,12 @@ def setup_ui(bot):
 
     bot.config_frame = ctk.CTkFrame(bot.main_container, fg_color="transparent")
     bot.config_frame.pack(fill="x")
-    bot.config_frame.grid_columnconfigure(0, weight=3)
-    bot.config_frame.grid_columnconfigure(1, weight=2)
-    bot.config_frame.grid_columnconfigure(2, weight=5)
-    bot.config_frame.grid_columnconfigure(3, weight=1)
+    bot.config_frame.grid_columnconfigure(0, weight=3, minsize=290)
+    bot.config_frame.grid_columnconfigure(1, weight=2, minsize=250)
+    bot.config_frame.grid_columnconfigure(2, weight=6, minsize=520)
+    bot.config_frame.grid_columnconfigure(3, weight=1, minsize=220)
 
-    top_card_height = 240
+    top_card_height = 285
 
     def create_task_card(parent, col, title, subtitle, btn_text, btn_cmd, btn_color, btn_hover, count_value):
         box = card(parent, height=top_card_height)
@@ -166,11 +167,11 @@ def setup_ui(bot):
     )
     bot.box_cj = box_cj
 
-    box_cj.grid_columnconfigure(0, weight=0, minsize=218)
-    box_cj.grid_columnconfigure(1, weight=1, minsize=196)
+    box_cj.grid_columnconfigure(0, weight=1, minsize=236)
+    box_cj.grid_columnconfigure(1, weight=0, minsize=188)
 
     assist_row = ctk.CTkFrame(box_cj, fg_color="transparent")
-    assist_row.grid(row=5, column=0, sticky="w", padx=14, pady=(8, 0))
+    assist_row.grid(row=6, column=0, columnspan=2, sticky="w", padx=14, pady=(12, 0))
     bot.sw_ai_assist = ctk.CTkSwitch(
         assist_row,
         text="AI辅助",
@@ -179,7 +180,16 @@ def setup_ui(bot):
         progress_color=colors["purple"],
         font=font_small,
     )
-    bot.sw_ai_assist.pack(side="left", padx=(0, 12))
+    bot.sw_ai_assist.pack(side="left", padx=(0, 6))
+    bot.sw_ai_prefer = ctk.CTkSwitch(
+        assist_row,
+        text="AI优先",
+        variable=bot.var_ai_prefer,
+        command=bot.on_ai_prefer_changed,
+        progress_color=colors["purple"],
+        font=font_small,
+    )
+    bot.sw_ai_prefer.pack(side="left", padx=(0, 6))
     bot.sw_ai_auto_capture = ctk.CTkSwitch(
         assist_row,
         text="自动截图",
@@ -190,14 +200,15 @@ def setup_ui(bot):
     )
     bot.sw_ai_auto_capture.pack(side="left")
 
-    skill_area = ctk.CTkFrame(box_cj, fg_color="transparent")
-    skill_area.grid(row=0, column=1, rowspan=6, sticky="nsew", padx=(4, 12), pady=(18, 14))
+    skill_area = ctk.CTkFrame(box_cj, fg_color="transparent", width=176)
+    skill_area.grid(row=0, column=1, rowspan=5, sticky="ne", padx=(0, 10), pady=(18, 8))
+    skill_area.grid_propagate(False)
     skill_area.grid_columnconfigure(0, weight=1)
-    skill_area.grid_columnconfigure(1, weight=0)
-    skill_area.grid_rowconfigure(0, weight=1)
+    skill_area.grid_rowconfigure(0, weight=0)
+    skill_area.grid_rowconfigure(1, weight=0)
 
     bot.grid_frame = ctk.CTkFrame(skill_area, fg_color="transparent")
-    bot.grid_frame.grid(row=0, column=0, sticky="e", padx=(0, 10))
+    bot.grid_frame.grid(row=0, column=0, sticky="n", padx=0)
     bot.grid_labels = [[None] * 4 for _ in range(4)]
     for r in range(4):
         for c in range(4):
@@ -206,18 +217,18 @@ def setup_ui(bot):
             bot.grid_labels[r][c] = lbl
 
     dir_frame = ctk.CTkFrame(skill_area, fg_color="transparent")
-    dir_frame.grid(row=0, column=1, sticky="w")
+    dir_frame.grid(row=1, column=0, sticky="n", pady=(10, 0))
     for idx, (text, val) in enumerate([("↑", "up"), ("↓", "down"), ("←", "left"), ("→", "right")]):
-        button(dir_frame, text, lambda x=val: bot.add_skill_dir(x), width=28, height=28).grid(
-            row=idx // 2,
-            column=idx % 2,
+        button(dir_frame, text, lambda x=val: bot.add_skill_dir(x), width=30, height=28).grid(
+            row=0,
+            column=idx,
             padx=2,
             pady=2,
         )
-    button(dir_frame, "清除", bot.clear_skill_dir, color=colors["red"], hover=colors["red_hover"], width=60, height=28).grid(
-        row=2,
+    button(dir_frame, "清除", bot.clear_skill_dir, color=colors["red"], hover=colors["red_hover"], width=72, height=28).grid(
+        row=1,
         column=0,
-        columnspan=2,
+        columnspan=4,
         sticky="ew",
         padx=2,
         pady=(8, 2),
