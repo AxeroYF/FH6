@@ -294,7 +294,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.log("蓝图代码可自行修改")
         self.log("默认分辨率为1080P，请勿开启HDR，以免影响图片识别。工具运行目录不要有中文。")
         self.log("游戏设置为【自动转向】【手动挡】，游戏语言设置为【简体中文】")
-        self.log("ai版自带一个预训练模型。点击【AI辅助】开启，然后再点击【AI优先】，可以优先使用ai模型选车，兼容性可能比模板检测更好")
+        self.log("ai版自带一个预训练模型。点击【AI辅助】开启后，会优先使用ai模型选车，兼容性可能比模板检测更好")
         self.log("大部分以图像识别作为引导，减少机器盲目操作的风险，但仍无法完全避免，使用前请做好准备")
 
     # ==========================================
@@ -408,6 +408,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             "ai_prefer": False,
             "ai_only": False,
             "ai_auto_capture": False,
+            "smart_page": False,
             "ai_model_path": "models/fh6_car_select_yolo.pt"
         }
         ext_path = USER_CONFIG_FILE
@@ -419,6 +420,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                     self.config.update(user_config)
             except Exception as e:
                 self.log(f"用户 config.json 损坏，已自动恢复默认配置。")
+        self.config["ai_prefer"] = bool(self.config.get("ai_assist", False))
 
         # 3. 将最新、最完整的配置重新写回外置文件
         try:
@@ -450,12 +452,13 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.config["auto_restart"] = self.config.get("auto_restart", False)
         if hasattr(self, "var_ai_assist"):
             self.config["ai_assist"] = self.var_ai_assist.get()
-        if hasattr(self, "var_ai_prefer"):
-            self.config["ai_prefer"] = self.var_ai_prefer.get()
+            self.config["ai_prefer"] = self.config["ai_assist"]
         if hasattr(self, "var_ai_only"):
             self.config["ai_only"] = self.var_ai_only.get()
         if hasattr(self, "var_ai_auto_capture"):
             self.config["ai_auto_capture"] = self.var_ai_auto_capture.get()
+        if hasattr(self, "var_smart_page"):
+            self.config["smart_page"] = self.var_smart_page.get()
         if hasattr(self, "le_restart_cmd"):
             self.config["restart_cmd"] = self.le_restart_cmd.get().strip()
         try:
@@ -730,6 +733,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
     def on_ai_assist_changed(self):
         enabled = bool(self.var_ai_assist.get())
         self.config["ai_assist"] = enabled
+        self.config["ai_prefer"] = enabled
         if not enabled:
             if hasattr(self, "var_ai_only"):
                 self.var_ai_only.set(False)
@@ -742,18 +746,19 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         if enabled:
             self.preload_ai_model_async()
 
-    def on_ai_prefer_changed(self):
-        enabled = bool(self.var_ai_prefer.get())
-        self.config["ai_prefer"] = enabled
+    def on_smart_page_changed(self):
+        enabled = bool(self.var_smart_page.get())
+        self.config["smart_page"] = enabled
+        if not enabled:
+            self.memory_car_page = 0
         self.save_config()
-        self.log("AI first enabled." if enabled else "AI first disabled.")
+        self.log("Smart page enabled." if enabled else "Smart page disabled.")
 
     def on_ai_only_changed(self):
         enabled = bool(self.var_ai_only.get())
         self.config["ai_only"] = enabled
         if enabled:
             self.var_ai_assist.set(True)
-            self.var_ai_prefer.set(True)
             self.config["ai_assist"] = True
             self.config["ai_prefer"] = True
         self.save_config()
@@ -2370,7 +2375,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
 
         self.game_click(brand_pos)
         time.sleep(1.0)
-        jump_pages = max(0, self.memory_car_page - 1)
+        smart_page_enabled = bool(self.config.get("smart_page", False))
+        jump_pages = max(0, self.memory_car_page - 1) if smart_page_enabled else 0
 
         if jump_pages > 0:
             self.log(f"智能记忆触发：快速跳过前 {jump_pages} 页...")
@@ -2393,8 +2399,11 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             if pos_target:
                 self.game_click(pos_target)
                 found_car = True
-                self.memory_car_page = current_page
-                self.log(f"锁定目标车辆！已记录当前页码: {current_page}")
+                if smart_page_enabled:
+                    self.memory_car_page = current_page
+                    self.log(f"锁定目标车辆！已记录当前页码: {current_page}")
+                else:
+                    self.log("锁定目标车辆！")
                 break
 
             for _ in range(4):
@@ -2404,8 +2413,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             current_page += 1
 
         if not found_car:
-            self.log("列表中未找到目标车辆，重置记忆页码。")
-            self.memory_car_page = 0
+            self.log("列表中未找到目标车辆。")
+            if smart_page_enabled:
+                self.log("已重置智能记忆页码。")
+                self.memory_car_page = 0
             return False
 
         time.sleep(1.2)

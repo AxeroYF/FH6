@@ -102,6 +102,7 @@ def ai_default_config(*, pure_ai: bool = False) -> dict:
         "ai_prefer": True,
         "ai_only": pure_ai,
         "ai_auto_capture": False,
+        "smart_page": False,
         "ai_model_path": "models/fh6_car_select_yolo.pt",
     }
 
