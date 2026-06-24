@@ -234,9 +234,9 @@ def main():
     parser = argparse.ArgumentParser(description="Export car-select debug captures to a YOLO-style draft dataset.")
     parser.add_argument("--debug-dir", default="debug/car_select")
     parser.add_argument("--output", default="datasets/fh6_car_select")
-    parser.add_argument("--car-template", default="images/newCC.png")
-    parser.add_argument("--tag-template", default="images/newcartag.png")
-    parser.add_argument("--class-template", default="images/classB600.png")
+    parser.add_argument("--car-template", default="images/1080p/newCC.png")
+    parser.add_argument("--tag-template", default="images/1080p/newcartag.png")
+    parser.add_argument("--class-template", default="images/1080p/classB600.png")
     parser.add_argument("--scales", default="1.0,0.98,1.02,0.95,1.05")
     args = parser.parse_args()
 

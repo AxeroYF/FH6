@@ -90,6 +90,7 @@ def setup_ui(bot):
     bot.var_smart_page = ctk.BooleanVar(value=bot.config.get("smart_page", False))
     bot.var_ai_only = ctk.BooleanVar(value=bot.config.get("ai_only", False))
     bot.var_ai_auto_capture = ctk.BooleanVar(value=bot.config.get("ai_auto_capture", False))
+    bot.var_diagnostic_mode = ctk.BooleanVar(value=bot.config.get("diagnostic_mode", False))
     bot.var_auto_restart = ctk.BooleanVar(value=False)
 
     bot.main_container = ctk.CTkFrame(bot, fg_color="transparent")
@@ -154,6 +155,12 @@ def setup_ui(bot):
         colors["green_hover"],
         bot.config.get("buy_count", 30),
     )
+    bot.car_limit_row = ctk.CTkFrame(box_car, fg_color="transparent")
+    bot.car_limit_row.grid(row=5, column=0, pady=(8, 0))
+    label(bot.car_limit_row, "CR", color=colors["muted"], font=font_small).grid(row=0, column=0, sticky="w", padx=(0, 8))
+    bot.entry_cr_amount = entry(bot.car_limit_row, width=124, height=30, placeholder_text="输入CR数量")
+    bot.entry_cr_amount.insert(0, str(bot.config.get("cr_amount", 0) or ""))
+    bot.entry_cr_amount.grid(row=0, column=1, sticky="w")
 
     box_cj, bot.btn_cj, bot.entry_cj, bot.lbl_cj = create_task_card(
         bot.config_frame,
@@ -285,6 +292,16 @@ def setup_ui(bot):
     bot.entry_race_timeout.insert(0, str(bot.config.get("race_timeout", 300)))
     bot.entry_race_timeout.pack(side="left", padx=(0, 16))
     bot.btn_test_boot = button(bot.global_settings_frame, "测试启动", bot.start_test_boot, width=82, height=30)
+    bot.btn_test_boot.pack(side="right", padx=(0, 12))
+    bot.sw_diagnostic_mode = ctk.CTkSwitch(
+        bot.global_settings_frame,
+        text="诊断记录",
+        variable=bot.var_diagnostic_mode,
+        command=bot.on_diagnostic_mode_changed,
+        progress_color=colors["blue"],
+        font=font_small,
+    )
+    bot.sw_diagnostic_mode.pack(side="right", padx=(0, 10))
 
     bot.runtime_frame = card(bot.main_container, height=66, fg_color="#111112")
     bot.runtime_frame.pack(fill="x", pady=(10, 0))
@@ -335,6 +352,22 @@ def setup_ui(bot):
     bot.lbl_log_title.pack(side="left")
     bot.btn_toggle_log = button(bot.log_header, "收起日志", bot.toggle_log_panel, width=82, height=28)
     bot.btn_toggle_log.pack(side="right")
+
+    bot.calibration_frame = ctk.CTkFrame(
+        bot.main_container,
+        fg_color=colors["panel"],
+        corner_radius=8,
+        border_width=1,
+        border_color=colors["line"],
+        height=38,
+    )
+    bot.calibration_frame.pack(fill="x", pady=(8, 0))
+    bot.calibration_frame.pack_propagate(False)
+    label(bot.calibration_frame, "自适应校准", color=colors["muted"], font=font_small).pack(side="left", padx=(12, 8))
+    bot.lbl_calibration_status = label(bot.calibration_frame, "未校准", color=colors["yellow"], font=font_small)
+    bot.lbl_calibration_status.pack(side="left", padx=(0, 12))
+    bot.lbl_calibration_detail = label(bot.calibration_frame, "等待游戏窗口", color=colors["text"], font=font_small)
+    bot.lbl_calibration_detail.pack(side="left")
 
     bot.bottom_frame = ctk.CTkFrame(bot.main_container, fg_color="transparent", height=236)
     bot.bottom_frame.pack(fill="both", expand=True, pady=(8, 0))

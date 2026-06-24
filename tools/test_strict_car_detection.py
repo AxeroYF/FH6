@@ -250,9 +250,9 @@ def write_image(path: Path, img):
 def main():
     parser = argparse.ArgumentParser(description="Offline strict wheelspin car detection tester.")
     parser.add_argument("--input", default="screenshot", help="Image file or directory.")
-    parser.add_argument("--car-template", default="images/newCC.png")
-    parser.add_argument("--tag-template", default="images/newcartag.png")
-    parser.add_argument("--class-template", default="images/classB600.png")
+    parser.add_argument("--car-template", default="images/1080p/newCC.png")
+    parser.add_argument("--tag-template", default="images/1080p/newcartag.png")
+    parser.add_argument("--class-template", default="images/1080p/classB600.png")
     parser.add_argument("--scales", default="1.0,0.98,1.02,0.95,1.05")
     parser.add_argument("--tag-threshold", type=float, default=0.52)
     parser.add_argument("--class-threshold", type=float, default=0.58)

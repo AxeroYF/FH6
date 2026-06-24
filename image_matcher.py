@@ -1,4 +1,4 @@
-import os
+﻿import os
 import time
 import json
 import pickle
@@ -14,6 +14,7 @@ from app_resources import (
     CACHE_DIR,
     TEMPLATE_CACHE_FILE,
     TEMPLATE_META_FILE,
+    get_images_dir,
     get_img_path,
 )
 
@@ -45,12 +46,12 @@ class ImageMatcherMixin:
             self.template_gray_cache[cache_key] = tpl
         return tpl
     def get_images_root_dir(self):
-        ext_dir = os.path.join(APP_DIR, "images")
-        if os.path.isdir(ext_dir):
+        ext_dir = get_images_dir(APP_DIR)
+        if ext_dir:
             return ext_dir
 
-        int_dir = os.path.join(INTERNAL_DIR, "images")
-        if os.path.isdir(int_dir):
+        int_dir = get_images_dir(INTERNAL_DIR)
+        if int_dir:
             return int_dir
 
         return None
@@ -175,7 +176,7 @@ class ImageMatcherMixin:
 
         screen_bgr = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2BGR)
 
-        # 对指定区域打黑块，避免重复识别同一个目标
+        # 瀵规寚瀹氬尯鍩熸墦榛戝潡锛岄伩鍏嶉噸澶嶈瘑鍒悓涓€涓洰鏍?
         if mask_areas:
             for rect in mask_areas:
                 try:
@@ -194,34 +195,58 @@ class ImageMatcherMixin:
     def get_scales_to_try(self, fast_mode=True):
         full_region = self.regions.get("全界面")
         curr_w = full_region[2] if full_region else pyautogui.size()[0]
-        # 你的图主要是按 2560 截的，就优先围绕 2560 计算
-        primary_base = 2560
-        primary_scale = curr_w / primary_base
         scales = []
+        calib = getattr(self, "match_calibration", {}) or {}
+        preferred_scale = float(calib.get("preferred_scale", 1.0) or 1.0)
+        hinted_scales = []
+        for base_width in [1600, 1920, 2560]:
+            hinted_scale = curr_w / base_width
+            hinted_scales.extend([
+                hinted_scale,
+                hinted_scale * 0.99,
+                hinted_scale * 1.01,
+            ])
+
         def add_scale(s):
             s = round(float(s), 3)
             if 0.45 <= s <= 1.8 and s not in scales:
                 scales.append(s)
-        # 先加“最可能正确”的比例及其微调
-        add_scale(primary_scale)
-        add_scale(primary_scale * 0.98)
-        add_scale(primary_scale * 1.02)
-        add_scale(primary_scale * 0.95)
-        add_scale(primary_scale * 1.05)
-        add_scale(primary_scale * 0.92)
-        add_scale(primary_scale * 1.08)
-        # 再兼容其它来源
-        for bw in [1920, 1600]:
-            s = curr_w / bw
+
+        # 优先尝试校准结果和窗口提示比例，避免 fast_mode 只围绕 1.0 导致入口图漏识别。
+        for s in [
+            preferred_scale,
+            *hinted_scales,
+            preferred_scale * 0.995,
+            preferred_scale * 1.005,
+            preferred_scale * 0.99,
+            preferred_scale * 1.01,
+            preferred_scale * 0.985,
+            preferred_scale * 1.015,
+            1.0,
+            0.99,
+            1.01,
+            0.985,
+            1.015,
+            0.97,
+            1.03,
+            0.95,
+            1.05,
+        ]:
             add_scale(s)
-            add_scale(s * 0.98)
-            add_scale(s * 1.02)
-        # 最后兜底常用比例
-        for s in [1.0, 0.95, 1.05, 0.9, 1.1, 0.85, 1.15, 0.8, 0.75, 0.7]:
+
+        # 最后保留一层兜底范围，兼容少量 UI 缩放或采样差异。
+        for s in [0.92, 1.08, 0.9, 1.1, 0.88, 1.12, 0.85, 1.15, 0.8, 0.75, 0.7]:
             add_scale(s)
+
         if fast_mode:
-            return scales[:8]
+            return scales[:16]
         return scales
+
+    def get_calibrated_gray_threshold(self, threshold):
+        calib = getattr(self, "match_calibration", {}) or {}
+        offset = float(calib.get("gray_threshold_offset", 0.0) or 0.0)
+        adjusted = float(threshold) + offset
+        return max(0.50, min(0.98, adjusted))
 
     def get_scaled_template(self, template_path, scale):
         actual_path = get_img_path(template_path)
@@ -285,7 +310,7 @@ class ImageMatcherMixin:
                         max_loc[1] + h // 2 + (region[1] if region else 0),
                     )
                     self.last_positions[template_path] = pos
-                    # 【新增】：在基础图像查找中增加详细日志返回
+                    # 銆愭柊澧炪€戯細鍦ㄥ熀纭€鍥惧儚鏌ユ壘涓鍔犺缁嗘棩蹇楄繑鍥?
                     self.log(f"[ImageMatch] 命中: {template_path} | 得分: {max_val:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
                     return pos
 
@@ -340,7 +365,7 @@ class ImageMatcherMixin:
             screen_bgr = self.capture_region(region)
             scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
             for scale in scales_to_try:
-                # 1. 结合新架构缓存直接读取缩放好的图像
+                # 1. 缁撳悎鏂版灦鏋勭紦瀛樼洿鎺ヨ鍙栫缉鏀惧ソ鐨勫浘鍍?
                 main_tpl_c, _ = self.get_scaled_template(main_path, scale)
                 sub_tpl_c, _ = self.get_scaled_template(sub_path, scale)
                 if main_tpl_c is None or sub_tpl_c is None:
@@ -348,29 +373,29 @@ class ImageMatcherMixin:
                 h_m, w_m = main_tpl_c.shape[:2]
                 if h_m < 5 or w_m < 5 or h_m > screen_bgr.shape[0] or w_m > screen_bgr.shape[1]:
                     continue
-                # 2. 一阶匹配：寻找全屏符合的主目标
+                # 2. 涓€闃跺尮閰嶏細瀵绘壘鍏ㄥ睆绗﹀悎鐨勪富鐩爣
                 res_main = cv2.matchTemplate(screen_bgr, main_tpl_c, cv2.TM_CCOEFF_NORMED)
                 loc = np.where(res_main >= threshold)
-                checked = set() # 【关键优化】：坐标去重，解决几十万次无效循环造成的卡顿
+                checked = set() # 銆愬叧閿紭鍖栥€戯細鍧愭爣鍘婚噸锛岃В鍐冲嚑鍗佷竾娆℃棤鏁堝惊鐜€犳垚鐨勫崱椤?
                 for pt in zip(*loc[::-1]):
                     x, y = pt
-                    # 过滤相邻 10 个像素内的重复识别点
+                    # 杩囨护鐩搁偦 10 涓儚绱犲唴鐨勯噸澶嶈瘑鍒偣
                     key = (x // 10, y // 10)
                     if key in checked:
                         continue
                     checked.add(key)
-                    # 3. 旧代码的核心精髓：在主图区域四周略微扩大 5 像素的范围内找元素
+                    # 3. 鏃т唬鐮佺殑鏍稿績绮鹃珦锛氬湪涓诲浘鍖哄煙鍥涘懆鐣ュ井鎵╁ぇ 5 鍍忕礌鐨勮寖鍥村唴鎵惧厓绱?
                     sub_roi = screen_bgr[
                         max(0, y - 5):min(screen_bgr.shape[0], y + h_m + 5),
                         max(0, x - 5):min(screen_bgr.shape[1], x + w_m + 5),
                     ]
                     if sub_tpl_c.shape[0] > sub_roi.shape[0] or sub_tpl_c.shape[1] > sub_roi.shape[1]:
                         continue
-                                        # 4. 二阶匹配：验证提取范围内是否包含子元素
+                                        # 4. 浜岄樁鍖归厤锛氶獙璇佹彁鍙栬寖鍥村唴鏄惁鍖呭惈瀛愬厓绱?
                     res_sub = cv2.matchTemplate(sub_roi, sub_tpl_c, cv2.TM_CCOEFF_NORMED)
                     sub_score = cv2.minMaxLoc(res_sub)[1]
                     if sub_score >= threshold:
-                        # 【新增】：在组合图像查找中增加详细日志返回
+                        # 銆愭柊澧炪€戯細鍦ㄧ粍鍚堝浘鍍忔煡鎵句腑澧炲姞璇︾粏鏃ュ織杩斿洖
                         main_score = res_main[y, x]
                         self.log(f"[ComboMatch] 命中: {main_path}+{sub_path} | 主图得分: {main_score:.3f} | 元素得分: {sub_score:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
                         return (
@@ -451,7 +476,7 @@ class ImageMatcherMixin:
                     if region:
                         cx += region[0]
                         cy += region[1]
-                    # 【新增】：打印稳定版组合匹配的详细得分
+                    # 銆愭柊澧炪€戯細鎵撳嵃绋冲畾鐗堢粍鍚堝尮閰嶇殑璇︾粏寰楀垎
                     self.log(f"[StableMatch] 命中: {main_path}+{sub_path} | 主图: {main_score:.3f} (需>{verify_threshold}) | 元素: {sub_score:.3f} (需>{sub_threshold})")
                     return (cx, cy)
 
@@ -488,23 +513,23 @@ class ImageMatcherMixin:
                 if h_m > screen_bgr.shape[0] or w_m > screen_bgr.shape[1]:
                     continue
 
-                # 用彩色主模板先找候选，门槛放低
+                # 鐢ㄥ僵鑹蹭富妯℃澘鍏堟壘鍊欓€夛紝闂ㄦ鏀句綆
                 res_main = cv2.matchTemplate(screen_bgr, main_tpl_c, cv2.TM_CCOEFF_NORMED)
-                # 不再只靠 >= main_threshold 硬切，改成取前 N 个高分候选
+                # 涓嶅啀鍙潬 >= main_threshold 纭垏锛屾敼鎴愬彇鍓?N 涓珮鍒嗗€欓€?
                 flat = res_main.ravel()
                 if flat.size == 0:
                     continue
-                top_k = min(80, flat.size)   # 可调，先 80
+                top_k = min(80, flat.size)   # 鍙皟锛屽厛 80
                 idxs = np.argpartition(flat, -top_k)[-top_k:]
                 points = []
                 for idx in idxs:
                     y, x = np.unravel_index(idx, res_main.shape)
                     score = res_main[y, x]
-                    # 给一个很低的底线，防止垃圾点太多
+                    # 缁欎竴涓緢浣庣殑搴曠嚎锛岄槻姝㈠瀮鍦剧偣澶
                     if score < max(0.55, main_threshold - 0.12):
                         continue
                     points.append((x, y, score))
-                # 先按 y、x 排序，保证视觉顺序
+                # 鍏堟寜 y銆亁 鎺掑簭锛屼繚璇佽瑙夐『搴?
                 points.sort(key=lambda p: (p[1], p[0]))
 
                 checked_points = set()
@@ -512,7 +537,7 @@ class ImageMatcherMixin:
                 for pt in points:
                     x, y, base_score = pt
 
-                    # 去重，避免同一辆车计算多次
+                    # 鍘婚噸锛岄伩鍏嶅悓涓€杈嗚溅璁＄畻澶氭
                     key = (x // 10, y // 10)
                     if key in checked_points:
                         continue
@@ -525,7 +550,7 @@ class ImageMatcherMixin:
                     if roi_bgr.shape[:2] != main_tpl_c.shape[:2]:
                         continue
 
-                    # 四维打分系统 (抗 HDR 核心)
+                    # 鍥涚淮鎵撳垎绯荤粺 (鎶?HDR 鏍稿績)
                     color_score = self.match_template_score(roi_bgr, main_tpl_c)
                     gray_score = self.match_template_score(roi_gray, main_tpl_gray)
                     edge_score = self.match_template_score(roi_edge, main_tpl_edge)
@@ -534,7 +559,7 @@ class ImageMatcherMixin:
                     tpl_center = self.crop_center_ratio(main_tpl_c, ratio=0.6)
                     center_score = self.match_template_score(roi_center, tpl_center)
 
-                    # 标签匹配 (NEW 标签或作者点赞标签)
+                    # 鏍囩鍖归厤 (NEW 鏍囩鎴栦綔鑰呯偣璧炴爣绛?
                     pad = 5
                     sub_roi = screen_bgr[
                         max(0, y - pad):min(screen_bgr.shape[0], y + h_m + pad),
@@ -545,7 +570,7 @@ class ImageMatcherMixin:
                     if like_score < like_threshold:
                         continue
 
-                    # 综合计算总分
+                    # 缁煎悎璁＄畻鎬诲垎
                     final_score = (
                         color_score * 0.30 +
                         gray_score * 0.20 +
@@ -559,7 +584,7 @@ class ImageMatcherMixin:
                         y + h_m // 2 + (region[1] if region else 0),
                     )
 
-                    # 只要及格，立刻返回（因为已经排过序了，第一个及格的一定是左上角的第一个目标）
+                    # 鍙鍙婃牸锛岀珛鍒昏繑鍥烇紙鍥犱负宸茬粡鎺掕繃搴忎簡锛岀涓€涓強鏍肩殑涓€瀹氭槸宸︿笂瑙掔殑绗竴涓洰鏍囷級
                     if final_score >= final_threshold:
                         self.log(
                             f"[MultiMatch] 锁定目标: {main_path}+{sub_path} | "
@@ -603,7 +628,7 @@ class ImageMatcherMixin:
             for pt in zip(*loc[::-1]):
                 x, y = pt
 
-                # 去重，避免相邻重复点太多
+                # 鍘婚噸锛岄伩鍏嶇浉閭婚噸澶嶇偣澶
                 key = (x // 10, y // 10)
                 if key in checked:
                     continue
@@ -628,7 +653,7 @@ class ImageMatcherMixin:
                     if region:
                         cx += region[0]
                         cy += region[1]
-                    # 【新增】：打印快速匹配模式得分
+                    # 銆愭柊澧炪€戯細鎵撳嵃蹇€熷尮閰嶆ā寮忓緱鍒?
                     main_score = res_main[y, x]
                     self.log(f"[FastMatch] 命中: {main_path}+{sub_path} | 主图: {main_score:.3f} (需>{threshold}) | 元素: {max_val_sub:.3f} (需>{sub_threshold})")
                     return (cx, cy)
@@ -762,7 +787,7 @@ class ImageMatcherMixin:
             return bool(self.config.get("chk_3", True)) and int(self.config.get("next_3", 1)) == 1
 
     def switch_to_liked_skillcar_in_car_list(self):
-        self.log("[SkillCar] 超抽后下一步为跑图，准备切换到带 liketag 的刷图车。")
+        self.log("[SkillCar] 超抽后下一步为跑图，准备切换到带 liketag 的刷图车辆。")
 
         pos_target = None
         for _ in range(30):
@@ -783,7 +808,7 @@ class ImageMatcherMixin:
             time.sleep(0.35)
 
         if not pos_target:
-            self.log("[SkillCar] 未找到带 liketag 的刷图车，无法切换到跑图车辆。")
+            self.log("[SkillCar] 未找到带 liketag 的刷图车辆，无法切换到跑图车辆。")
             return False
 
         self.game_click(pos_target)
@@ -809,11 +834,11 @@ class ImageMatcherMixin:
         time.sleep(1.5)
         self.hw_press("tab")
         time.sleep(5.0)
-        self.log("[SkillCar] 已切换到刷图车并返回漫游。")
+        self.log("[SkillCar] 已切换到刷图车辆并返回漫游。")
         return True
 
     def prepare_skillcar_for_next_race_after_cj(self):
-        self.log("[SkillCar] 准备复用超抽车辆列表流程切换刷图车。")
+        self.log("[SkillCar] 准备复用超抽车辆列表流程切换刷图车辆。")
         self.log("[SkillCar] 复用当前超抽车辆列表上下文，进入我的车辆。")
         if not self.enter_my_cars_from_vehicle_menu():
             return False
@@ -867,7 +892,7 @@ class ImageMatcherMixin:
         if pos_uat:
             self.log("[CJ] 已确认车辆菜单，使用方向键重置到我的车辆。")
         else:
-            self.log("[CJ] 未识别升级与调校，仍尝试用方向键重置到我的车辆。")
+            self.log("[CJ] 未识别到升级与调校，仍尝试用方向键重置到我的车辆。")
 
         for _ in range(6):
             if not self.is_running:
@@ -904,7 +929,7 @@ class ImageMatcherMixin:
         return True
 
     def load_template_transparent(self, template_path):
-        """专门加载带有 Alpha 透明通道的图片"""
+        """Load a template while preserving its alpha channel."""
         actual_path = get_img_path(template_path)
         cache_key = ("transparent", actual_path)
         if not hasattr(self, "template_transparent_cache"):
@@ -912,13 +937,13 @@ class ImageMatcherMixin:
         if cache_key in self.template_transparent_cache:
             return self.template_transparent_cache[cache_key]
             
-        # 注意这里的 cv2.IMREAD_UNCHANGED，它会保留透明通道 (BGRA)
+        # 娉ㄦ剰杩欓噷鐨?cv2.IMREAD_UNCHANGED锛屽畠浼氫繚鐣欓€忔槑閫氶亾 (BGRA)
         tpl = cv2.imread(actual_path, cv2.IMREAD_UNCHANGED)
         if tpl is not None:
             self.template_transparent_cache[cache_key] = tpl
         return tpl
     def find_image_transparent(self, template_path, region=None, threshold=0.70, fast_mode=True):
-        """带透明通道的匹配：彻底无视透明背景，只匹配图像主体"""
+        """Match templates with alpha channel while ignoring transparent background."""
         if not self.is_running:
             return None
         try:
@@ -927,12 +952,12 @@ class ImageMatcherMixin:
             
             if tpl_bgra is None:
                 return None
-            # 如果图片没有透明通道(不是4通道)，降级为普通匹配
+            # 濡傛灉鍥剧墖娌℃湁閫忔槑閫氶亾(涓嶆槸4閫氶亾)锛岄檷绾т负鏅€氬尮閰?
             if tpl_bgra.shape[2] != 4:
                 return self.find_image_in_screen(screen_bgr, template_path, region, threshold, fast_mode)
             scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
             for scale in scales_to_try:
-                # 对带有透明通道的原图进行缩放
+                # 瀵瑰甫鏈夐€忔槑閫氶亾鐨勫師鍥捐繘琛岀缉鏀?
                 if scale == 1.0:
                     tpl_scaled = tpl_bgra.copy()
                 else:
@@ -940,15 +965,15 @@ class ImageMatcherMixin:
                 h, w = tpl_scaled.shape[:2]
                 if h < 5 or w < 5 or h > screen_bgr.shape[0] or w > screen_bgr.shape[1]:
                     continue
-                # 分离出 BGR 色彩层 和 Alpha 透明遮罩层
+                # 鍒嗙鍑?BGR 鑹插僵灞?鍜?Alpha 閫忔槑閬僵灞?
                 tpl_bgr = tpl_scaled[:, :, :3]
                 alpha_mask = tpl_scaled[:, :, 3]
-                                # 核心魔法：带 mask 的匹配！透明区域不参与算分！
+                                # 鏍稿績榄旀硶锛氬甫 mask 鐨勫尮閰嶏紒閫忔槑鍖哄煙涓嶅弬涓庣畻鍒嗭紒
                 res = cv2.matchTemplate(screen_bgr, tpl_bgr, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
                 if max_val >= threshold:
-                    # 【新增】：带透明通道的匹配日志
-                    self.log(f"[AlphaMatch] 命中(无视背景): {template_path} | 得分: {max_val:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
+                    # 銆愭柊澧炪€戯細甯﹂€忔槑閫氶亾鐨勫尮閰嶆棩蹇?
+                    self.log(f"[AlphaMatch] 命中(忽略背景): {template_path} | 得分: {max_val:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
                     return (
                         max_loc[0] + w // 2 + (region[0] if region else 0),
                         max_loc[1] + h // 2 + (region[1] if region else 0),
@@ -958,7 +983,7 @@ class ImageMatcherMixin:
             self.log(f"find_image_transparent 异常: {e}")
             return None
     def wait_for_image_transparent(self, template_path, region=None, threshold=0.70, timeout=30, interval=0.4, fast_mode=True):
-        """等待带有透明背景的图片"""
+        """Wait for a transparent template to appear."""
         start = time.time()
         while self.is_running and time.time() - start < timeout:
             pos = self.find_image_transparent(template_path, region, threshold, fast_mode)
@@ -1021,7 +1046,7 @@ class ImageMatcherMixin:
         return None
 
     # ==========================================
-    # --- 【终极安全锁 V5.1】：排他 + 右下角调校精准狙击 + 强制从左到右 ---
+    # --- 銆愮粓鏋佸畨鍏ㄩ攣 V5.1銆戯細鎺掍粬 + 鍙充笅瑙掕皟鏍＄簿鍑嗙嫏鍑?+ 寮哄埗浠庡乏鍒板彸 ---
     # ==========================================
     def find_image_ultimate_safe(self, main_path, anti_path, region=None, main_threshold=0.80, anti_threshold=0.65, mask_areas=None):
         if not self.is_running: return None
@@ -1048,13 +1073,13 @@ class ImageMatcherMixin:
                 if h_m < 10 or w_m < 10 or h_m > screen_bgr.shape[0] or w_m > screen_bgr.shape[1]:
                     continue
 
-                # 1. 基础彩色初筛
+                # 1. 鍩虹褰╄壊鍒濈瓫
                 res_main = cv2.matchTemplate(screen_bgr, main_tpl_bgr, cv2.TM_CCOEFF_NORMED)
                 loc = np.where(res_main >= main_threshold)
 
                 
                 points = list(zip(*loc[::-1]))
-                # 强制按 X 坐标（从左到右）优先排序，无视上下排
+                # 寮哄埗鎸?X 鍧愭爣锛堜粠宸﹀埌鍙筹級浼樺厛鎺掑簭锛屾棤瑙嗕笂涓嬫帓
                 points.sort(key=lambda p: (p[1] // 50, p[0]))
                 
                 checked = set()
@@ -1070,7 +1095,7 @@ class ImageMatcherMixin:
                     if roi_bgr.shape[:2] != main_tpl_bgr.shape[:2]: continue
 
                     # ==================================
-                    # 防线 1: 排他校验
+                    # 闃茬嚎 1: 鎺掍粬鏍￠獙
                     # ==================================
                     if anti_path and anti_tpl_bgr is not None:
                         h_a, w_a = anti_tpl_bgr.shape[:2]
@@ -1082,11 +1107,11 @@ class ImageMatcherMixin:
                             res_anti = cv2.matchTemplate(anti_roi, anti_tpl_bgr, cv2.TM_CCOEFF_NORMED)
                             _, anti_score, _, _ = cv2.minMaxLoc(res_anti)
                             if anti_score >= anti_threshold:
-                                self.log(f"[排他拦截]: 发现排除图 ({anti_score:.2f})，放弃该目标。")
+                                self.log(f"[排他拦截] 发现排除图得分 {anti_score:.2f}，放弃该目标。")
                                 continue
 
                     # ==================================
-                    # 防线 2: 顶部文字
+                    # 闃茬嚎 2: 椤堕儴鏂囧瓧
                     # ==================================
                     top_h = int(h_m * 0.25)
                     tpl_top = main_tpl_gray[:top_h, :]
@@ -1101,7 +1126,7 @@ class ImageMatcherMixin:
                             _, score_top, _, _ = cv2.minMaxLoc(res_top)
 
                     # ==================================
-                    # 防线 3: 【右下角】
+                    # 闃茬嚎 3: 銆愬彸涓嬭銆?
                     # ==================================
                     bottom_h = int(h_m * 0.25)
                     right_w = int(w_m * 0.35)
@@ -1119,10 +1144,10 @@ class ImageMatcherMixin:
                             _, score_bot, _, _ = cv2.minMaxLoc(res_bot)
 
                     if base_score >= 0.76 and score_top >= 0.75 and score_bot >= 0.85:
-                        self.log(f"[终极安全-通过]: 锁定目标！总分:{base_score:.3f} | 顶部车名:{score_top:.2f} | 右下调校:{score_bot:.2f}")
+                        self.log(f"[终极安全-通过] 锁定目标！总分:{base_score:.3f} | 顶部车名:{score_top:.2f} | 右下调校:{score_bot:.2f}")
                         return (x + w_m // 2 + (region[0] if region else 0), y + h_m // 2 + (region[1] if region else 0))
                     else:
-                        pass # 静默拦截，继续寻找下一个坐标
+                        pass # 闈欓粯鎷︽埅锛岀户缁鎵句笅涓€涓潗鏍?
 
             return None
         except Exception as e:
@@ -1140,7 +1165,7 @@ class ImageMatcherMixin:
         try:
             h_s, w_s = screen_bgr.shape[:2]
             hsv = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2HSV)
-            # “全新”标签是高亮黄色，先用颜色把候选范围从整屏压到很小。
+            # 鈥滃叏鏂扳€濇爣绛炬槸楂樹寒榛勮壊锛屽厛鐢ㄩ鑹叉妸鍊欓€夎寖鍥翠粠鏁村睆鍘嬪埌寰堝皬銆?
             mask = cv2.inRange(hsv, np.array([22, 80, 160]), np.array([42, 255, 255]))
             kernel = np.ones((3, 3), np.uint8)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
@@ -1195,7 +1220,7 @@ class ImageMatcherMixin:
             if tx < int(w_s * 0.20) or ty < int(h_s * 0.18) or ty > int(h_s * 0.92):
                 return None
 
-            # 标签左上方应该是白色车辆卡片主体。
+            # 鏍囩宸︿笂鏂瑰簲璇ユ槸鐧借壊杞﹁締鍗＄墖涓讳綋銆?
             wx1 = max(0, tx - 145)
             wy1 = max(0, ty - 105)
             wx2 = max(0, tx - 12)
@@ -1212,7 +1237,7 @@ class ImageMatcherMixin:
             if white_ratio < 0.18:
                 return None
 
-            # 标签左下方通常能看到橙色车型信息条或等级条；标签贴近底部时要向上覆盖一点。
+            # 鏍囩宸︿笅鏂归€氬父鑳界湅鍒版鑹茶溅鍨嬩俊鎭潯鎴栫瓑绾ф潯锛涙爣绛捐创杩戝簳閮ㄦ椂瑕佸悜涓婅鐩栦竴鐐广€?
             ox1 = max(0, tx - 190)
             oy1 = max(0, ty - 12)
             ox2 = min(w_s, tx + 85)
@@ -1233,7 +1258,7 @@ class ImageMatcherMixin:
             self.log(f"validate_new_tag_grid_fallback 异常: {e}")
             return None
 
-    def find_new_consumable_car_strict(self, region=None, save_miss=False):
+    def find_new_consumable_car_template(self, region=None, save_miss=False):
         if not self.is_running:
             return None
         try:
@@ -1285,12 +1310,12 @@ class ImageMatcherMixin:
 
                 tag_candidates.sort()
                 if not tag_candidates:
-                    self.log(f"[StrictCar] 缩放 {scale:.3f} 未找到全新标签候选。")
+                    self.log(f"[TemplateCar] 缩放 {scale:.3f} 未找到全新标签候选。")
                     continue
 
                 last_debug = None
                 for ty, tx, tag_score in tag_candidates:
-                    # 验证 2：全新标签下方/左下方必须能找到目标等级 B600。
+                    # 楠岃瘉 2锛氬叏鏂版爣绛句笅鏂?宸︿笅鏂瑰繀椤昏兘鎵惧埌鐩爣绛夌骇 B600銆?
                     cx1 = max(0, int(tx - w_c * 1.45))
                     cy1 = max(0, int(ty - h_c * 0.25))
                     cx2 = min(screen_bgr.shape[1], int(tx + w_t + w_c * 0.40))
@@ -1308,15 +1333,15 @@ class ImageMatcherMixin:
                             "scores": {"new": tag_score, "b600": float(class_score)},
                         }
                         self.log(
-                            f"[StrictCar] 全新通过但等级不符: NEW:{tag_score:.3f} "
-                            f"B600:{class_score:.3f} 缩放:{scale:.3f}"
+                            f"[StrictCar] 鍏ㄦ柊閫氳繃浣嗙瓑绾т笉绗? NEW:{tag_score:.3f} "
+                            f"B600:{class_score:.3f} 缂╂斁:{scale:.3f}"
                         )
                         continue
 
                     class_x = cx1 + class_loc[0]
                     class_y = cy1 + class_loc[1]
 
-                    # 验证 3：以全新标签为锚点，只向左上方缩放搜索目标车辆卡片。
+                    # 楠岃瘉 3锛氫互鍏ㄦ柊鏍囩涓洪敋鐐癸紝鍙悜宸︿笂鏂圭缉鏀炬悳绱㈢洰鏍囪溅杈嗗崱鐗囥€?
                     sx1 = max(0, int(tx - w_m * 1.12))
                     sy1 = max(0, int(ty - h_m * 1.08))
                     sx2 = min(screen_bgr.shape[1], int(tx + w_t + w_m * 0.12))
@@ -1352,8 +1377,8 @@ class ImageMatcherMixin:
                             "scores": scores,
                         }
                         self.log(
-                            f"[StrictCar] 标签附近目标车位置不符: NEW:{tag_score:.3f} "
-                            f"近邻:{near_score:.3f} 相对:({tag_rel_x},{tag_rel_y}) 缩放:{scale:.3f}"
+                            f"[StrictCar] 鏍囩闄勮繎鐩爣杞︿綅缃笉绗? NEW:{tag_score:.3f} "
+                            f"杩戦偦:{near_score:.3f} 鐩稿:({tag_rel_x},{tag_rel_y}) 缂╂斁:{scale:.3f}"
                         )
                         continue
 
@@ -1364,8 +1389,8 @@ class ImageMatcherMixin:
                             "scores": scores,
                         }
                         self.log(
-                            f"[StrictCar] 标签附近目标车分数不足: NEW:{tag_score:.3f} "
-                            f"目标:{near_score:.3f} 相对:({tag_rel_x},{tag_rel_y}) 缩放:{scale:.3f}"
+                            f"[StrictCar] 鏍囩闄勮繎鐩爣杞﹀垎鏁颁笉瓒? NEW:{tag_score:.3f} "
+                            f"鐩爣:{near_score:.3f} 鐩稿:({tag_rel_x},{tag_rel_y}) 缂╂斁:{scale:.3f}"
                         )
                         continue
 
@@ -1387,8 +1412,8 @@ class ImageMatcherMixin:
                             "scores": {**scores, "top": float(top_score)},
                         }
                         self.log(
-                            f"[StrictCar] 车名区域验证失败: NEW:{tag_score:.3f} B600:{class_score:.3f} "
-                            f"目标:{near_score:.3f} 车名:{top_score:.3f} 缩放:{scale:.3f}"
+                            f"[StrictCar] 杞﹀悕鍖哄煙楠岃瘉澶辫触: NEW:{tag_score:.3f} B600:{class_score:.3f} "
+                            f"鐩爣:{near_score:.3f} 杞﹀悕:{top_score:.3f} 缂╂斁:{scale:.3f}"
                         )
                         continue
 
@@ -1409,20 +1434,20 @@ class ImageMatcherMixin:
                             "scores": {**scores, "top": float(top_score), "bottom": float(bottom_score)},
                         }
                         self.log(
-                            f"[StrictCar] 底部等级区域验证失败: NEW:{tag_score:.3f} B600:{class_score:.3f} "
-                            f"目标:{near_score:.3f} 车名:{top_score:.3f} 底部:{bottom_score:.3f} 缩放:{scale:.3f}"
+                            f"[StrictCar] 搴曢儴绛夌骇鍖哄煙楠岃瘉澶辫触: NEW:{tag_score:.3f} B600:{class_score:.3f} "
+                            f"鐩爣:{near_score:.3f} 杞﹀悕:{top_score:.3f} 搴曢儴:{bottom_score:.3f} 缂╂斁:{scale:.3f}"
                         )
                         continue
 
                     click_x = card_x + w_m // 2 + (region[0] if region else 0)
                     click_y = card_y + h_m // 2 + (region[1] if region else 0)
                     self.log(
-                        f"[StrictCar] 全新+B600+目标车通过: NEW:{tag_score:.3f} B600:{class_score:.3f} "
-                        f"目标:{near_score:.3f} 车名:{top_score:.3f} 底部:{bottom_score:.3f} "
-                        f"标签相对:({tag_rel_x},{tag_rel_y}) 等级:({class_x},{class_y}) 缩放:{scale:.3f}"
+                        f"[StrictCar] 鍏ㄦ柊+B600+鐩爣杞﹂€氳繃: NEW:{tag_score:.3f} B600:{class_score:.3f} "
+                        f"鐩爣:{near_score:.3f} 杞﹀悕:{top_score:.3f} 搴曢儴:{bottom_score:.3f} "
+                        f"鏍囩鐩稿:({tag_rel_x},{tag_rel_y}) 绛夌骇:({class_x},{class_y}) 缂╂斁:{scale:.3f}"
                     )
                     if self.config.get("ai_auto_capture", False):
-                        self.save_strict_car_debug(
+                        self.save_template_car_debug(
                             screen_bgr,
                             "pass",
                             reason=f"pass scale:{scale:.3f}",
@@ -1438,7 +1463,7 @@ class ImageMatcherMixin:
 
             if save_miss:
                 if final_debug:
-                    self.save_strict_car_debug(
+                    self.save_template_car_debug(
                         screen_bgr,
                         "miss",
                         reason=final_debug.get("reason", ""),
@@ -1447,20 +1472,20 @@ class ImageMatcherMixin:
                         force=True,
                     )
                 else:
-                    self.save_strict_car_debug(screen_bgr, "miss", reason="no strict car candidate", force=True)
+                    self.save_template_car_debug(screen_bgr, "miss", reason="no strict car candidate", force=True)
             return None
         except Exception as e:
-            self.log(f"find_new_consumable_car_strict 异常: {e}")
+            self.log(f"find_new_consumable_car_template 异常: {e}")
             return None
 
-    def wait_for_new_consumable_car_strict(self, timeout=3, interval=0.2):
+    def wait_for_new_consumable_car(self, timeout=3, interval=0.2):
         ai_enabled = self.config.get("ai_assist", False)
         ai_first = ai_enabled and self.config.get("ai_prefer", False)
         ai_only = ai_enabled and self.config.get("ai_only", False)
         save_debug = self.config.get("ai_auto_capture", False)
 
         if self.is_running and (ai_first or ai_only):
-            pos = self.find_new_consumable_car_ai(
+            pos = self.find_new_consumable_car_with_ai(
                 region=self.regions["全界面"],
                 save_miss=save_debug,
             )
@@ -1471,13 +1496,13 @@ class ImageMatcherMixin:
 
         start = time.time()
         while self.is_running and time.time() - start < timeout:
-            pos = self.find_new_consumable_car_strict(region=self.regions["全界面"], save_miss=False)
+            pos = self.find_new_consumable_car_template(region=self.regions["全界面"], save_miss=False)
             if pos:
                 return pos
             time.sleep(interval)
 
         if self.is_running and ai_enabled and not ai_first:
-            pos = self.find_new_consumable_car_ai(
+            pos = self.find_new_consumable_car_with_ai(
                 region=self.regions["全界面"],
                 save_miss=save_debug,
             )
@@ -1485,7 +1510,7 @@ class ImageMatcherMixin:
                 return pos
 
         if self.is_running:
-            return self.find_new_consumable_car_strict(
+            return self.find_new_consumable_car_template(
                 region=self.regions["全界面"],
                 save_miss=save_debug,
             )
@@ -1517,17 +1542,17 @@ class ImageMatcherMixin:
         return img[y1:y1 + ch, x1:x1 + cw]
     def find_image_gray(self, template_path, region=None, threshold=0.75, fast_mode=True, invert_mode=False):
         """
-        纯灰度UI查找，支持多分辨率缩放 + 可选翻转模式
-        参数:
-            template_path (str): 模板图片路径
-            region (tuple|list|None): 搜索区域，格式通常为 (x, y, w, h)，None 表示全屏/默认区域
-            threshold (float): 匹配阈值，范围通常 0~1，越高越严格
-            fast_mode (bool): 是否使用快速缩放搜索模式，True=较少缩放比，False=更多缩放比
-            invert_mode (bool): 是否启用翻转模式，True 时会同时匹配原图和反相图（白底黑字 / 黑底白字都能识别）
-        返回:
+        绾伆搴I鏌ユ壘锛屾敮鎸佸鍒嗚鲸鐜囩缉鏀?+ 鍙€夌炕杞ā寮?
+        鍙傛暟:
+            template_path (str): 妯℃澘鍥剧墖璺緞
+            region (tuple|list|None): 鎼滅储鍖哄煙锛屾牸寮忛€氬父涓?(x, y, w, h)锛孨one 琛ㄧず鍏ㄥ睆/榛樿鍖哄煙
+            threshold (float): 鍖归厤闃堝€硷紝鑼冨洿閫氬父 0~1锛岃秺楂樿秺涓ユ牸
+            fast_mode (bool): 鏄惁浣跨敤蹇€熺缉鏀炬悳绱㈡ā寮忥紝True=杈冨皯缂╂斁姣旓紝False=鏇村缂╂斁姣?
+            invert_mode (bool): 鏄惁鍚敤缈昏浆妯″紡锛孴rue 鏃朵細鍚屾椂鍖归厤鍘熷浘鍜屽弽鐩稿浘锛堢櫧搴曢粦瀛?/ 榛戝簳鐧藉瓧閮借兘璇嗗埆锛?
+        杩斿洖:
             tuple|None:
-                - 找到时返回匹配中心点坐标 (x, y)
-                - 找不到返回 None
+                - 鎵惧埌鏃惰繑鍥炲尮閰嶄腑蹇冪偣鍧愭爣 (x, y)
+                - 鎵句笉鍒拌繑鍥?None
         """
         if not self.is_running:
             return None
@@ -1535,14 +1560,21 @@ class ImageMatcherMixin:
             screen_bgr = self.capture_region(region)
             screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
             scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
+            effective_threshold = self.get_calibrated_gray_threshold(threshold)
+            region_name = next((name for name, rect in self.regions.items() if rect == region), "custom") if region else "全界面"
+            started = time.time()
+            best_score = 0.0
+            best_scale = 1.0
+            best_mode = "原图"
+            best_position = None
 
-            # 【新增】模板只读取一次，避免每个 scale 都重复加载
+            # 銆愭柊澧炪€戞ā鏉垮彧璇诲彇涓€娆★紝閬垮厤姣忎釜 scale 閮介噸澶嶅姞杞?
             tpl_gray_raw = self.load_template_gray(template_path)
             if tpl_gray_raw is None:
                 return None
 
             for scale in scales_to_try:
-                # 【改动】从原始模板复制，避免反复 resize 污染
+                # 銆愭敼鍔ㄣ€戜粠鍘熷妯℃澘澶嶅埗锛岄伩鍏嶅弽澶?resize 姹℃煋
                 tpl_gray = tpl_gray_raw
                 if scale != 1.0:
                     tpl_gray = cv2.resize(tpl_gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
@@ -1552,48 +1584,115 @@ class ImageMatcherMixin:
                     continue
 
                 # ==============================
-                # 原图匹配
+                # 鍘熷浘鍖归厤
                 # ==============================
                 res = cv2.matchTemplate(screen_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                if max_val >= threshold:
-                    self.log(f"[GrayMatch] 命中: {template_path} | 模式: 原图 | 灰度得分: {max_val:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
+                if max_val > best_score:
+                    best_score = float(max_val)
+                    best_scale = float(scale)
+                    best_mode = "原图"
+                    best_position = (
+                        max_loc[0] + w // 2 + (region[0] if region else 0),
+                        max_loc[1] + h // 2 + (region[1] if region else 0),
+                    )
+                if max_val >= effective_threshold:
+                    if hasattr(self, "record_diagnostic_match"):
+                        self.record_diagnostic_match(
+                            "find_image_gray",
+                            template_path,
+                            region_name=region_name,
+                            threshold=threshold,
+                            effective_threshold=effective_threshold,
+                            fast_mode=fast_mode,
+                            invert_mode=invert_mode,
+                            hit=True,
+                            score=max_val,
+                            scale=scale,
+                            mode="原图",
+                            template=template_path,
+                            position=best_position,
+                            elapsed_ms=int((time.time() - started) * 1000),
+                        )
+                    self.log(f"[GrayMatch] 命中: {template_path} | 模式: 原图 | 灰度得分: {max_val:.3f} (阈值 {effective_threshold}) | 缩放比: {scale:.3f}")
                     return (
                         max_loc[0] + w // 2 + (region[0] if region else 0),
                         max_loc[1] + h // 2 + (region[1] if region else 0),
                     )
 
                 # ==============================
-                # 【新增】翻转模式：反相模板匹配
+                # 銆愭柊澧炪€戠炕杞ā寮忥細鍙嶇浉妯℃澘鍖归厤
                 # ==============================
                 if invert_mode:
                     tpl_inv = 255 - tpl_gray
                     res_inv = cv2.matchTemplate(screen_gray, tpl_inv, cv2.TM_CCOEFF_NORMED)
                     _, max_val_inv, _, max_loc_inv = cv2.minMaxLoc(res_inv)
-                    if max_val_inv >= threshold:
-                        self.log(f"[GrayMatch] 命中: {template_path} | 模式: 反相 | 灰度得分: {max_val_inv:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
+                    if max_val_inv > best_score:
+                        best_score = float(max_val_inv)
+                        best_scale = float(scale)
+                        best_mode = "反相"
+                        best_position = (
+                            max_loc_inv[0] + w // 2 + (region[0] if region else 0),
+                            max_loc_inv[1] + h // 2 + (region[1] if region else 0),
+                        )
+                    if max_val_inv >= effective_threshold:
+                        if hasattr(self, "record_diagnostic_match"):
+                            self.record_diagnostic_match(
+                                "find_image_gray",
+                                template_path,
+                                region_name=region_name,
+                                threshold=threshold,
+                                effective_threshold=effective_threshold,
+                                fast_mode=fast_mode,
+                                invert_mode=invert_mode,
+                                hit=True,
+                                score=max_val_inv,
+                                scale=scale,
+                                mode="反相",
+                                template=template_path,
+                                position=best_position,
+                                elapsed_ms=int((time.time() - started) * 1000),
+                            )
+                        self.log(f"[GrayMatch] 命中: {template_path} | 模式: 反相 | 灰度得分: {max_val_inv:.3f} (阈值 {effective_threshold}) | 缩放比: {scale:.3f}")
                         return (
                             max_loc_inv[0] + w // 2 + (region[0] if region else 0),
                             max_loc_inv[1] + h // 2 + (region[1] if region else 0),
                         )
 
+            if hasattr(self, "record_diagnostic_match"):
+                self.record_diagnostic_match(
+                    "find_image_gray",
+                    template_path,
+                    region_name=region_name,
+                    threshold=threshold,
+                    effective_threshold=effective_threshold,
+                    fast_mode=fast_mode,
+                    invert_mode=invert_mode,
+                    hit=False,
+                    score=best_score,
+                    scale=best_scale,
+                    mode=best_mode,
+                    template=template_path,
+                    position=best_position,
+                    elapsed_ms=int((time.time() - started) * 1000),
+                )
             return None
         except Exception as e:
             self.log(f"find_image_gray 异常: {e}")
             return None
     def find_any_image_gray(self, image_list, region=None, threshold=0.75, fast_mode=True, invert_mode=False):
         """
-        纯灰度多图查找，支持多分辨率缩放 + 可选翻转模式
-        参数:
-            image_list (list): 模板图片路径列表，如 ["a.png", "b.png", "c.png"]
-            region (tuple|list|None): 搜索区域，格式通常为 (x, y, w, h)，None 表示全屏/默认区域
-            threshold (float): 匹配阈值，范围通常 0~1，越高越严格
-            fast_mode (bool): 是否使用快速缩放搜索模式，True=较少缩放比，False=更多缩放比
-            invert_mode (bool): 是否启用翻转模式，True 时会同时匹配原图和反相图（白底黑字 / 黑底白字都能识别）
-        返回:
+        绾伆搴﹀鍥炬煡鎵撅紝鏀寔澶氬垎杈ㄧ巼缂╂斁 + 鍙€夌炕杞ā寮?
+        鍙傛暟:
+            image_list (list): 妯℃澘鍥剧墖璺緞鍒楄〃锛屽 ["a.png", "b.png", "c.png"]
+            region (tuple|list|None): 鎼滅储鍖哄煙锛屾牸寮忛€氬父涓?(x, y, w, h)锛孨one 琛ㄧず鍏ㄥ睆/榛樿鍖哄煙
+            threshold (float): 鍖归厤闃堝€硷紝鑼冨洿閫氬父 0~1锛岃秺楂樿秺涓ユ牸
+            fast_mode (bool): 鏄惁浣跨敤蹇€熺缉鏀炬悳绱㈡ā寮忥紝True=杈冨皯缂╂斁姣旓紝False=鏇村缂╂斁姣?
+            invert_mode (bool): 鏄惁鍚敤缈昏浆妯″紡锛孴rue 鏃朵細鍚屾椂鍖归厤鍘熷浘鍜屽弽鐩稿浘锛堢櫧搴曢粦瀛?/ 榛戝簳鐧藉瓧閮借兘璇嗗埆锛?
+        杩斿洖:
             tuple|None:
-                - 找到任意一张时返回匹配中心点坐标 (x, y)
-                - 都找不到返回 None
+                - 鎵惧埌浠绘剰涓€寮犳椂杩斿洖鍖归厤涓績鐐瑰潗鏍?(x, y)
+                - 閮芥壘涓嶅埌杩斿洖 None
         """
         if not self.is_running:
             return None
@@ -1601,15 +1700,23 @@ class ImageMatcherMixin:
             screen_bgr = self.capture_region(region)
             screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
             scales_to_try = self.get_scales_to_try(fast_mode=fast_mode)
+            effective_threshold = self.get_calibrated_gray_threshold(threshold)
+            region_name = next((name for name, rect in self.regions.items() if rect == region), "custom") if region else "全界面"
+            started = time.time()
+            best_template = None
+            best_score = 0.0
+            best_scale = 1.0
+            best_mode = "原图"
+            best_position = None
 
             for img_path in image_list:
-                # 【新增】模板只读取一次
+                # 銆愭柊澧炪€戞ā鏉垮彧璇诲彇涓€娆?
                 tpl_gray_raw = self.load_template_gray(img_path)
                 if tpl_gray_raw is None:
                     continue
 
                 for scale in scales_to_try:
-                    # 【改动】从原始模板复制
+                    # 銆愭敼鍔ㄣ€戜粠鍘熷妯℃澘澶嶅埗
                     tpl_gray = tpl_gray_raw
                     if scale != 1.0:
                         tpl_gray = cv2.resize(tpl_gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
@@ -1619,31 +1726,101 @@ class ImageMatcherMixin:
                         continue
 
                     # ==============================
-                    # 原图匹配
+                    # 鍘熷浘鍖归厤
                     # ==============================
                     res = cv2.matchTemplate(screen_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
                     _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                    if max_val >= threshold:
-                        self.log(f"[GrayMatchAny] 命中: {img_path} | 模式: 原图 | 灰度得分: {max_val:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
+                    if max_val > best_score:
+                        best_template = img_path
+                        best_score = float(max_val)
+                        best_scale = float(scale)
+                        best_mode = "原图"
+                        best_position = (
+                            max_loc[0] + w // 2 + (region[0] if region else 0),
+                            max_loc[1] + h // 2 + (region[1] if region else 0),
+                        )
+                    if max_val >= effective_threshold:
+                        if hasattr(self, "record_diagnostic_match"):
+                            self.record_diagnostic_match(
+                                "find_any_image_gray",
+                                img_path,
+                                region_name=region_name,
+                                threshold=threshold,
+                                effective_threshold=effective_threshold,
+                                fast_mode=fast_mode,
+                                invert_mode=invert_mode,
+                                hit=True,
+                                score=max_val,
+                                scale=scale,
+                                mode="原图",
+                                template=img_path,
+                                position=best_position,
+                                elapsed_ms=int((time.time() - started) * 1000),
+                            )
+                        self.log(f"[GrayMatchAny] 命中: {img_path} | 模式: 原图 | 灰度得分: {max_val:.3f} (阈值 {effective_threshold}) | 缩放比: {scale:.3f}")
                         return (
                             max_loc[0] + w // 2 + (region[0] if region else 0),
                             max_loc[1] + h // 2 + (region[1] if region else 0),
                         )
 
                     # ==============================
-                    # 【新增】翻转模式：反相模板匹配
+                    # 銆愭柊澧炪€戠炕杞ā寮忥細鍙嶇浉妯℃澘鍖归厤
                     # ==============================
                     if invert_mode:
                         tpl_inv = 255 - tpl_gray
                         res_inv = cv2.matchTemplate(screen_gray, tpl_inv, cv2.TM_CCOEFF_NORMED)
                         _, max_val_inv, _, max_loc_inv = cv2.minMaxLoc(res_inv)
-                        if max_val_inv >= threshold:
-                            self.log(f"[GrayMatchAny] 命中: {img_path} | 模式: 反相 | 灰度得分: {max_val_inv:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
+                        if max_val_inv > best_score:
+                            best_template = img_path
+                            best_score = float(max_val_inv)
+                            best_scale = float(scale)
+                            best_mode = "反相"
+                            best_position = (
+                                max_loc_inv[0] + w // 2 + (region[0] if region else 0),
+                                max_loc_inv[1] + h // 2 + (region[1] if region else 0),
+                            )
+                        if max_val_inv >= effective_threshold:
+                            if hasattr(self, "record_diagnostic_match"):
+                                self.record_diagnostic_match(
+                                    "find_any_image_gray",
+                                    img_path,
+                                    region_name=region_name,
+                                    threshold=threshold,
+                                    effective_threshold=effective_threshold,
+                                    fast_mode=fast_mode,
+                                    invert_mode=invert_mode,
+                                    hit=True,
+                                    score=max_val_inv,
+                                    scale=scale,
+                                    mode="反相",
+                                    template=img_path,
+                                    position=best_position,
+                                    elapsed_ms=int((time.time() - started) * 1000),
+                                )
+                            self.log(f"[GrayMatchAny] 命中: {img_path} | 模式: 反相 | 灰度得分: {max_val_inv:.3f} (阈值 {effective_threshold}) | 缩放比: {scale:.3f}")
                             return (
                                 max_loc_inv[0] + w // 2 + (region[0] if region else 0),
                                 max_loc_inv[1] + h // 2 + (region[1] if region else 0),
                             )
 
+            if hasattr(self, "record_diagnostic_match"):
+                self.record_diagnostic_match(
+                    "find_any_image_gray",
+                    best_template or "|".join(image_list),
+                    region_name=region_name,
+                    threshold=threshold,
+                    effective_threshold=effective_threshold,
+                    fast_mode=fast_mode,
+                    invert_mode=invert_mode,
+                    hit=False,
+                    score=best_score,
+                    scale=best_scale,
+                    mode=best_mode,
+                    template=best_template,
+                    position=best_position,
+                    elapsed_ms=int((time.time() - started) * 1000),
+                    extra={"candidates": image_list},
+                )
             return None
         except Exception as e:
             self.log(f"find_any_image_gray 异常: {e}")
@@ -1651,19 +1828,19 @@ class ImageMatcherMixin:
 
     def wait_for_any_image_gray(self, image_list, region=None, threshold=0.75, timeout=30, interval=0.3, fast_mode=True, invert_mode=False):
         """
-        等待多张灰度图中的任意一张出现
-        参数:
-            image_list (list): 模板图片路径列表，如 ["a.png", "b.png", "c.png"]
-            region (tuple|list|None): 搜索区域，格式通常为 (x, y, w, h)，None 表示全屏/默认区域
-            threshold (float): 匹配阈值，范围通常 0~1，越高越严格
-            timeout (int|float): 最长等待时间，单位秒
-            interval (int|float): 每次检测失败后的等待间隔，单位秒
-            fast_mode (bool): 是否使用快速缩放搜索模式，True=较少缩放比，False=更多缩放比
-            invert_mode (bool): 是否启用翻转模式，True 时会同时匹配原图和反相图
-        返回:
+        绛夊緟澶氬紶鐏板害鍥句腑鐨勪换鎰忎竴寮犲嚭鐜?
+        鍙傛暟:
+            image_list (list): 妯℃澘鍥剧墖璺緞鍒楄〃锛屽 ["a.png", "b.png", "c.png"]
+            region (tuple|list|None): 鎼滅储鍖哄煙锛屾牸寮忛€氬父涓?(x, y, w, h)锛孨one 琛ㄧず鍏ㄥ睆/榛樿鍖哄煙
+            threshold (float): 鍖归厤闃堝€硷紝鑼冨洿閫氬父 0~1锛岃秺楂樿秺涓ユ牸
+            timeout (int|float): 鏈€闀跨瓑寰呮椂闂达紝鍗曚綅绉?
+            interval (int|float): 姣忔妫€娴嬪け璐ュ悗鐨勭瓑寰呴棿闅旓紝鍗曚綅绉?
+            fast_mode (bool): 鏄惁浣跨敤蹇€熺缉鏀炬悳绱㈡ā寮忥紝True=杈冨皯缂╂斁姣旓紝False=鏇村缂╂斁姣?
+            invert_mode (bool): 鏄惁鍚敤缈昏浆妯″紡锛孴rue 鏃朵細鍚屾椂鍖归厤鍘熷浘鍜屽弽鐩稿浘
+        杩斿洖:
             tuple|None:
-                - 超时前找到时返回匹配中心点坐标 (x, y)
-                - 超时未找到返回 None
+                - 瓒呮椂鍓嶆壘鍒版椂杩斿洖鍖归厤涓績鐐瑰潗鏍?(x, y)
+                - 瓒呮椂鏈壘鍒拌繑鍥?None
         """
         start = time.time()
         while self.is_running and time.time() - start < timeout:
@@ -1672,31 +1849,31 @@ class ImageMatcherMixin:
                 region=region,
                 threshold=threshold,
                 fast_mode=fast_mode,
-                invert_mode=invert_mode   # 【新增】
+                invert_mode=invert_mode   # 銆愭柊澧炪€?
             )
             if pos:
                 return pos
             
-            # 安全等待机制，防止卡死
+            # 瀹夊叏绛夊緟鏈哄埗锛岄槻姝㈠崱姝?
             sleep_end = time.time() + interval
             while self.is_running and time.time() < sleep_end:
                 time.sleep(0.05)
         return None
     def wait_for_image_gray(self, template_path, region=None, threshold=0.75, timeout=30, interval=0.3, fast_mode=True, invert_mode=False):
         """
-        等待单张灰度图出现
-        参数:
-            template_path (str): 模板图片路径
-            region (tuple|list|None): 搜索区域，格式通常为 (x, y, w, h)，None 表示全屏/默认区域
-            threshold (float): 匹配阈值，范围通常 0~1，越高越严格
-            timeout (int|float): 最长等待时间，单位秒
-            interval (int|float): 每次检测失败后的等待间隔，单位秒
-            fast_mode (bool): 是否使用快速缩放搜索模式，True=较少缩放比，False=更多缩放比
-            invert_mode (bool): 是否启用翻转模式，True 时会同时匹配原图和反相图
-        返回:
+        绛夊緟鍗曞紶鐏板害鍥惧嚭鐜?
+        鍙傛暟:
+            template_path (str): 妯℃澘鍥剧墖璺緞
+            region (tuple|list|None): 鎼滅储鍖哄煙锛屾牸寮忛€氬父涓?(x, y, w, h)锛孨one 琛ㄧず鍏ㄥ睆/榛樿鍖哄煙
+            threshold (float): 鍖归厤闃堝€硷紝鑼冨洿閫氬父 0~1锛岃秺楂樿秺涓ユ牸
+            timeout (int|float): 鏈€闀跨瓑寰呮椂闂达紝鍗曚綅绉?
+            interval (int|float): 姣忔妫€娴嬪け璐ュ悗鐨勭瓑寰呴棿闅旓紝鍗曚綅绉?
+            fast_mode (bool): 鏄惁浣跨敤蹇€熺缉鏀炬悳绱㈡ā寮忥紝True=杈冨皯缂╂斁姣旓紝False=鏇村缂╂斁姣?
+            invert_mode (bool): 鏄惁鍚敤缈昏浆妯″紡锛孴rue 鏃朵細鍚屾椂鍖归厤鍘熷浘鍜屽弽鐩稿浘
+        杩斿洖:
             tuple|None:
-                - 超时前找到时返回匹配中心点坐标 (x, y)
-                - 超时未找到返回 None
+                - 瓒呮椂鍓嶆壘鍒版椂杩斿洖鍖归厤涓績鐐瑰潗鏍?(x, y)
+                - 瓒呮椂鏈壘鍒拌繑鍥?None
         """
         start = time.time()
         while self.is_running and time.time() - start < timeout:
@@ -1705,19 +1882,19 @@ class ImageMatcherMixin:
                 region=region,
                 threshold=threshold,
                 fast_mode=fast_mode,
-                invert_mode=invert_mode   # 【新增】
+                invert_mode=invert_mode   # 銆愭柊澧炪€?
             )
             if pos:
                 return pos
             
-            # 安全等待机制
+            # 瀹夊叏绛夊緟鏈哄埗
             sleep_end = time.time() + interval
             while self.is_running and time.time() < sleep_end:
                 time.sleep(0.05)
         return None
 
     def find_any_image_transparent(self, image_list, region=None, threshold=0.70, fast_mode=True):
-        """查找多张带透明通道的图片中的任意一张"""
+        """Find any transparent template from a list."""
         if not self.is_running:
             return None
         try:
@@ -1729,7 +1906,7 @@ class ImageMatcherMixin:
                 if tpl_bgra is None:
                     continue
                 
-                # 如果图片没有透明通道，降级为普通匹配
+                # 濡傛灉鍥剧墖娌℃湁閫忔槑閫氶亾锛岄檷绾т负鏅€氬尮閰?
                 if tpl_bgra.shape[2] != 4:
                     pos = self.find_image_in_screen(screen_bgr, template_path, region, threshold, fast_mode)
                     if pos: return pos
@@ -1752,8 +1929,8 @@ class ImageMatcherMixin:
                     _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
                     if max_val >= threshold:
-                        # 【新增】：多张带透明通道的匹配日志
-                        self.log(f"[AlphaMatchAny] 命中(无视背景): {template_path} | 得分: {max_val:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
+                        # 銆愭柊澧炪€戯細澶氬紶甯﹂€忔槑閫氶亾鐨勫尮閰嶆棩蹇?
+                        self.log(f"[AlphaMatchAny] 命中(忽略背景): {template_path} | 得分: {max_val:.3f} (阈值 {threshold}) | 缩放比: {scale:.3f}")
                         return (
                             max_loc[0] + w // 2 + (region[0] if region else 0),
                             max_loc[1] + h // 2 + (region[1] if region else 0),
@@ -1764,7 +1941,7 @@ class ImageMatcherMixin:
             return None
 
     def wait_for_any_image_transparent(self, image_list, region=None, threshold=0.70, timeout=30, interval=0.4, fast_mode=True):
-        """等待带有透明背景的多张图片中的任意一张出现"""
+        """Wait for any transparent template from a list to appear."""
         start = time.time()
         while self.is_running and time.time() - start < timeout:
             pos = self.find_any_image_transparent(image_list, region, threshold, fast_mode)
@@ -1862,12 +2039,12 @@ class ImageMatcherMixin:
         except Exception:
             return 0.0
     #===============================
-    #---测试函数-----
+    #---娴嬭瘯鍑芥暟-----
     #===============================
     def start_test_find_image(self):
-        """F3测试：直接反复调用原 find_image_with_element_multi()，最多找12个目标，只移动鼠标不点击"""
+        """F3 test helper: repeatedly search targets without clicking them."""
         if self.is_running:
-            self.log("已有任务正在运行，无法执行 F3 测试找图。")
+            self.log("已有任务正在运行，无法执行 F3 测图。")
             return
 
         self.is_running = True
@@ -1880,7 +2057,7 @@ class ImageMatcherMixin:
         self.ui_call(self.lbl_runtime_loop.configure, text="测试模式")
         self.update_timer()
 
-        self.log("====== 开始 F3 测试原二阶找图 ======")
+        self.log("====== 开始 F3 测试原二阶段找图 ======")
 
         def test_runner():
             try:
@@ -1933,7 +2110,7 @@ class ImageMatcherMixin:
                     ))
 
                     if duplicated:
-                        self.log(f"F3测试：识别到重复目标 ({x}, {y})，已扩大遮罩，继续寻找。")
+                        self.log(f"F3 测试：识别到重复目标 ({x}, {y})，已扩大遮罩，继续查找。")
                         continue
 
                     found_positions.append((x, y))
@@ -1942,7 +2119,7 @@ class ImageMatcherMixin:
                     self.hw_mouse_move(x, y)
                     time.sleep(0.5)
 
-                self.log(f"F3测试完成，共找到 {len(found_positions)} 个目标。")
+                self.log(f"F3 测试完成，共找到 {len(found_positions)} 个目标。")
 
             except Exception as e:
                 self.log(f"F3测试异常: {e}")
@@ -1952,4 +2129,5 @@ class ImageMatcherMixin:
         self.current_thread = threading.Thread(target=test_runner, daemon=True)
         self.current_thread.start()
     # ==========================================
-    # --- 模块：跑图前置与循环跑图 ---
+    # --- 妯″潡锛氳窇鍥惧墠缃笌寰幆璺戝浘 ---
+
