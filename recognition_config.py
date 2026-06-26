@@ -16,6 +16,7 @@ DEFAULT_RECOGNITION_PROFILES = {
     "race.start_ready": {"threshold": 0.75, "timeout": 4.0, "interval": 0.2, "fast_mode": True},
     "race.start_loop": {"threshold": 0.75, "timeout": 0.7, "interval": 0.2, "fast_mode": True},
     "race.restart_prompt": {"threshold": 0.70, "timeout": 4.0, "interval": 0.3, "fast_mode": True},
+    "race.author_prompt": {"threshold": 0.68, "timeout": 2.0, "interval": 0.15, "fast_mode": True, "invert_mode": True},
     "cj.designpaint": {"threshold": 0.62, "timeout": 10, "interval": 0.25, "fast_mode": False},
     "cj.choosecar_quick": {"threshold": 0.62, "timeout": 2, "interval": 0.25, "fast_mode": False},
     "cj.choosecar_retry": {"threshold": 0.62, "timeout": 10, "interval": 0.25, "fast_mode": False},

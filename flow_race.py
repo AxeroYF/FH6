@@ -306,13 +306,14 @@ def logic_race(self, target_count):
         if not finished:
             return False
 
-        self.handle_author_prompt(release_drive_keys=False)
-        if not self.is_running:
-            return False
-
         if self.race_counter == target_count - 1:
             self.hw_press("enter")
-            time.sleep(2.0)
+            # 首次完成蓝图时，评价弹窗会在离开结算页后才出现。
+            time.sleep(0.4)
+            self.handle_author_prompt(release_drive_keys=False)
+            if not self.is_running:
+                return False
+            time.sleep(0.5)
         else:
             self.hw_press("x")
             time.sleep(0.8)
@@ -345,21 +346,26 @@ def abort_invalid_blueprint_and_back_to_roam(self):
 
 
 def handle_author_prompt(self, release_drive_keys=False):
-    pos_author = self.find_any_image_gray(
+    profile = get_recognition_profile(self, "race.author_prompt")
+    self.log(f"正在检测赛事评价弹窗（最多 {profile['timeout']:.1f}s）...", level="DEBUG")
+    pos_author = self.wait_for_any_image_gray(
         ["likeauthor.png", "dislikeauthor.png"],
-        region=self.regions["全界面"],
-        threshold=0.68,
-        fast_mode=False,
-        invert_mode=True,
+        region=self.regions["中间"],
+        threshold=profile["threshold"],
+        timeout=profile["timeout"],
+        interval=profile["interval"],
+        fast_mode=profile["fast_mode"],
+        invert_mode=profile["invert_mode"],
     )
     if not pos_author:
+        self.log("未出现赛事评价弹窗，继续后续流程。", level="DEBUG")
         return False
 
     if release_drive_keys:
         self.hw_key_up("w")
         self.hw_key_up("up")
 
-    self.log("识别到作者评价界面，执行确认跳过。")
+    self.log("已识别赛事评价弹窗，执行点赞确认。")
     for _ in range(2):
         if not self.is_running:
             return True
