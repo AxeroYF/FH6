@@ -788,7 +788,7 @@ class ImageMatcherMixin:
                     continue
 
                 tag_res = cv2.matchTemplate(screen_bgr, tag_tpl, cv2.TM_CCOEFF_NORMED)
-                ys, xs = np.where(tag_res >= 0.66)
+                ys, xs = np.where(tag_res >= 0.70)
                 tag_points = [(int(y), int(x), float(tag_res[y, x])) for y, x in zip(ys, xs)]
                 tag_points.sort(key=lambda p: (p[0], p[1], -p[2]))
                 checked_tags = set()
@@ -817,7 +817,7 @@ class ImageMatcherMixin:
                     if not (-int(w_c * 0.08) <= rel_x <= int(w_c * 1.08) and -int(h_c * 0.08) <= rel_y <= int(h_c * 1.08)):
                         best_debug = f"rel invalid tag:{tag_score:.3f} car:{car_score:.3f} rel:{rel_x},{rel_y} scale:{scale:.3f}"
                         continue
-                    if car_score < 0.64:
+                    if car_score < 0.70:
                         best_debug = f"car low tag:{tag_score:.3f} car:{car_score:.3f} scale:{scale:.3f}"
                         continue
 
