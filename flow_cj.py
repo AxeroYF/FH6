@@ -577,8 +577,8 @@ def logic_super_wheelspin(self, target_count):
         time.sleep(0.2)
         self.hw_press("enter")
         time.sleep(1.0)
-        self.hw_press("enter")
-        time.sleep(1.0)
+        # self.hw_press("enter")
+        # time.sleep(1.0)
 
         # self.log("尝试寻找'上车'按钮...")
 
@@ -604,66 +604,94 @@ def logic_super_wheelspin(self, target_count):
         #     time.sleep(1.0)
 
         profile = get_recognition_profile(self, "cj.spraycar")
-        pos_spraycar = self.wait_for_image_gray(
-            "spraycar-w.png",
-            region=self.regions["左"],
-            threshold=profile["threshold"],
-            timeout=profile["timeout"],
-            interval=profile["interval"],
-            fast_mode=profile["fast_mode"],
-            invert_mode=profile["invert_mode"],
-        )
-        if not pos_spraycar:
-            self.log("上车后未确认进入喷漆车辆页面")
-            return False
-
-        self.log("已确认喷漆车辆页面，按 ESC 返回车辆菜单...")
-        self.hw_press("esc")
-
-        profile = get_recognition_profile(self, "cj.vehicle_menu")
-        pos_vehicle_menu = self.wait_for_image_gray(
-            "designpaint-w.png",
-            region=self.regions["左"],
-            threshold=profile["threshold"],
-            timeout=profile["timeout"],
-            interval=profile["interval"],
-            fast_mode=profile["fast_mode"],
-            invert_mode=profile["invert_mode"],
-        )
-        if not pos_vehicle_menu:
-            profile = get_recognition_profile(self, "cj.vehicle_menu_retry")
-            pos_vehicle_menu = self.wait_for_image_gray(
-                "designpaint-b.png",
+        pos_spraycar = None
+        for enter_retry in range(2):
+            pos_spraycar = self.wait_for_image_gray(
+                "spraycar-w.png",
                 region=self.regions["左"],
                 threshold=profile["threshold"],
                 timeout=profile["timeout"],
                 interval=profile["interval"],
                 fast_mode=profile["fast_mode"],
                 invert_mode=profile["invert_mode"],
-        )
-        if not pos_vehicle_menu:
-            self.log("ESC 后未确认返回车辆菜单")
+            )
+            if pos_spraycar:
+                break
+            if enter_retry == 0:
+                self.log("未确认喷漆车辆页面，补按一次 Enter 后继续等待...")
+                self.hw_press("enter")
+                time.sleep(1.0)
+        if not pos_spraycar:
+            self.log("上车后未确认进入喷漆车辆页面")
             return False
 
-        menu_stable_deadline = time.time() + 0.8
-        while self.is_running and time.time() < menu_stable_deadline:
-            profile = get_recognition_profile(self, "cj.vehicle_menu_stable")
-            menu_stable = self.find_any_image_gray(
-                ["designpaint-w.png", "designpaint-b.png"],
+        self.log("已确认喷漆车辆页面，准备按 ESC 返回升级与调校所在菜单...")
+        pos_uat = None
+        for esc_try in range(4):
+            if not self.is_running:
+                return False
+
+            time.sleep(0.6 if esc_try == 0 else 0.25)
+            self.hw_press("esc")
+            time.sleep(0.8)
+
+            profile = get_recognition_profile(self, "cj.uat_menu")
+            pos_uat = self.wait_for_any_image_gray(
+                ["UandT-w.png", "UandT-b.png"],
+                region=self.regions["左"],
+                threshold=profile["threshold"],
+                timeout=profile["timeout"],
+                interval=profile["interval"],
+                fast_mode=profile["fast_mode"],
+            )
+            if pos_uat:
+                break
+
+            profile = get_recognition_profile(self, "cj.choosecar_quick")
+            choosecar_still_visible = self.find_any_image_gray(
+                ["choosecar.png", "choosecar-b.png"],
+                region=self.regions["左"],
+                threshold=profile["threshold"],
+                fast_mode=profile["fast_mode"],
+            )
+            if choosecar_still_visible:
+                self.log(f"ESC 后仍停留在设计及喷漆子菜单，继续返回上一级 ({esc_try + 1}/4)")
+                continue
+
+            profile = get_recognition_profile(self, "cj.spraycar")
+            spraycar_still_visible = self.find_image_gray(
+                "spraycar-w.png",
                 region=self.regions["左"],
                 threshold=profile["threshold"],
                 fast_mode=profile["fast_mode"],
                 invert_mode=profile["invert_mode"],
             )
-            if not menu_stable:
+            if spraycar_still_visible:
+                self.log(f"ESC 后仍停留在喷漆车辆页面，重试返回上一级 ({esc_try + 1}/4)")
+
+        if not pos_uat:
+            self.log("ESC 后未确认返回升级与调校所在菜单")
+            return False
+
+        menu_stable_deadline = time.time() + 0.8
+        menu_stable_limit = time.time() + 2.0
+        while self.is_running and time.time() < menu_stable_deadline and time.time() < menu_stable_limit:
+            profile = get_recognition_profile(self, "cj.uat_menu")
+            stable_uat = self.find_any_image_gray(
+                ["UandT-w.png", "UandT-b.png"],
+                region=self.regions["左"],
+                threshold=profile["threshold"],
+                fast_mode=profile["fast_mode"],
+            )
+            if stable_uat:
+                pos_uat = stable_uat
+            else:
                 menu_stable_deadline = time.time() + 0.25
             time.sleep(0.08)
 
-        self.log("车辆菜单已稳定，使用方向键定位到升级与调校...")
-        self.hw_press("up", delay=0.05)
-        time.sleep(0.2)
-        self.hw_press("enter")
-        time.sleep(0.5)
+        self.log("已定位升级与调校，准备进入车辆专精...")
+        self.game_click(pos_uat)
+        time.sleep(0.8)
 
         profile = get_recognition_profile(self, "cj.cls")
         pos_cls = self.wait_for_any_image_gray(

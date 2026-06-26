@@ -613,10 +613,10 @@ class ImageMatcherMixin:
 
                     # 计算综合得分。
                     final_score = (
-                        color_score * 0.30 +
-                        gray_score * 0.20 +
-                        edge_score * 0.20 +
-                        center_score * 0.15 +
+                        color_score * 0.35 +
+                        gray_score * 0.25 +
+                        edge_score * 0.05 +
+                        center_score * 0.20 +
                         like_score * 0.15
                     )
 

@@ -107,7 +107,7 @@ def logic_race(self, target_count):
     self.hw_press("enter")
     time.sleep(1.5)
     self.hw_press("enter")
-    time.sleep(1.8)
+    time.sleep(0.8)
 
     profile = get_recognition_profile(self, "race.skillcar_like")
     pos_target = self.find_skill_car_with_like_tag(
