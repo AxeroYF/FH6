@@ -52,6 +52,20 @@ def copy_common_files(target: Path) -> None:
         shutil.copy2(ROOT / name, target / name)
 
 
+def copy_current_runtime_state(target: Path) -> None:
+    """Package the user's current settings and the bounded template cache."""
+    config_file = ROOT / "config.json"
+    require_file(config_file)
+    shutil.copy2(config_file, target / "config.json")
+
+    cache_target = target / "cache"
+    cache_target.mkdir(parents=True, exist_ok=True)
+    for name in ("template_cache.pkl", "template_meta.json"):
+        source = ROOT / "cache" / name
+        require_file(source)
+        shutil.copy2(source, cache_target / name)
+
+
 def clean_path(path: Path) -> None:
     if path.is_dir():
         shutil.rmtree(path)
@@ -129,9 +143,7 @@ def package_pure_ai(version: str) -> Path:
     shutil.copy2(AI_EXE, target / "FH6Auto.exe")
     copy_common_files(target)
     copy_tree(ROOT / "models", target / "models")
-    with (target / "config.json").open("w", encoding="utf-8") as fh:
-        json.dump(ai_default_config(pure_ai=True), fh, ensure_ascii=False, indent=4)
-        fh.write("\n")
+    copy_current_runtime_state(target)
     return target
 
 

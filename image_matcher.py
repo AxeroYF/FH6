@@ -2,6 +2,7 @@
 import time
 import json
 import pickle
+import hashlib
 
 import cv2
 import numpy as np
@@ -22,6 +23,22 @@ from app_resources import (
 from recognition_config import get_recognition_profile
 
 MATCH_THRESHOLD = 0.8
+TEMPLATE_CACHE_FORMAT = 3
+TEMPLATE_CACHE_MAX_BYTES = 300 * 1024 * 1024
+TEMPLATE_CACHE_MAX_SOURCE_PIXELS = 300_000
+# Fixed cache profile for the supported 1600x900/1080p-window workflow.  Keep
+# runtime matching flexible, but do not pre-expand every 2560px-window scale.
+TEMPLATE_CACHE_SCALES = (
+    0.625,
+    1.0, 0.99, 1.01,
+    0.833, 0.825, 0.842,
+    0.619, 0.631, 0.622, 0.628, 0.616, 0.634,
+    0.985, 1.015, 0.97, 1.03, 0.95, 1.05,
+    0.92, 1.08, 0.9, 1.1, 0.88, 1.12, 0.85, 1.15,
+    0.8, 0.75, 0.7,
+    1.2, 1.188, 1.212,
+    0.742, 0.758, 0.746, 0.754, 0.739, 0.761,
+)
 
 
 CONSUMABLE_CAR_TEMPLATE_PROFILES = {
@@ -138,11 +155,11 @@ class ImageMatcherMixin:
 
         return None
 
-    def get_template_meta(self):
+    def get_template_meta(self, scales=None):
         images_dir = self.get_images_root_dir()
-        meta_data = {}
+        template_meta = {}
         if not images_dir:
-            return meta_data
+            return {}
 
         for root, _, files in os.walk(images_dir):
             for file in files:
@@ -153,15 +170,24 @@ class ImageMatcherMixin:
                 rel_path = os.path.relpath(path, images_dir).replace("\\", "/")
 
                 try:
-                    stat = os.stat(path)
-                    meta_data[rel_path] = {
-                        "mtime": stat.st_mtime,
-                        "size": stat.st_size,
+                    with open(path, "rb") as fh:
+                        digest = hashlib.sha256(fh.read()).hexdigest()
+                    template_meta[rel_path] = {
+                        "size": os.path.getsize(path),
+                        "sha256": digest,
                     }
                 except Exception:
                     pass
 
-        return meta_data
+        if scales is None:
+            scales = TEMPLATE_CACHE_SCALES
+        return {
+            "format": TEMPLATE_CACHE_FORMAT,
+            "max_bytes": TEMPLATE_CACHE_MAX_BYTES,
+            "max_source_pixels": TEMPLATE_CACHE_MAX_SOURCE_PIXELS,
+            "scales": [round(float(scale), 3) for scale in scales],
+            "templates": template_meta,
+        }
 
     def is_template_cache_valid(self):
         if not os.path.exists(TEMPLATE_CACHE_FILE) or not os.path.exists(TEMPLATE_META_FILE):
@@ -186,14 +212,16 @@ class ImageMatcherMixin:
             return False
 
         cache_data = {}
-        meta_data = self.get_template_meta()
+        scales = list(TEMPLATE_CACHE_SCALES)
+        meta_data = self.get_template_meta(scales=scales)
+        total_bytes = 0
 
-        scales = self.get_scales_to_try(fast_mode=False)
-
-        for rel_path in meta_data.keys():
+        for rel_path in meta_data["templates"].keys():
             img_path = os.path.join(images_dir, rel_path)
             tpl = cv2.imread(img_path, cv2.IMREAD_COLOR)
             if tpl is None:
+                continue
+            if int(tpl.shape[0]) * int(tpl.shape[1]) > TEMPLATE_CACHE_MAX_SOURCE_PIXELS:
                 continue
 
             cache_data[rel_path] = {}
@@ -204,9 +232,16 @@ class ImageMatcherMixin:
                     else:
                         scaled = cv2.resize(tpl, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
+                    scaled_bytes = int(scaled.nbytes)
+                    if total_bytes + scaled_bytes > TEMPLATE_CACHE_MAX_BYTES:
+                        continue
                     cache_data[rel_path][str(round(scale, 3))] = scaled
+                    total_bytes += scaled_bytes
                 except Exception:
                     continue
+
+            if not cache_data[rel_path]:
+                cache_data.pop(rel_path, None)
 
         try:
             with open(TEMPLATE_CACHE_FILE, "wb") as f:
@@ -215,7 +250,10 @@ class ImageMatcherMixin:
             with open(TEMPLATE_META_FILE, "w", encoding="utf-8") as f:
                 json.dump(meta_data, f, ensure_ascii=False, indent=2)
 
-            self.log("模板缓存文件构建完成。")
+            self.log(
+                f"模板缓存文件构建完成（{len(cache_data)} 个模板，"
+                f"约 {total_bytes / 1024 / 1024:.1f} MB）。"
+            )
             return True
         except Exception as e:
             self.log(f"写入模板缓存失败: {e}")
@@ -316,9 +354,12 @@ class ImageMatcherMixin:
                 level="WARN",
             )
 
-    def get_scales_to_try(self, fast_mode=True):
+    def get_scales_to_try(self, fast_mode=True, target_width=None):
         full_region = self.regions.get("全界面")
-        curr_w = full_region[2] if full_region else pyautogui.size()[0]
+        if target_width is not None:
+            curr_w = float(target_width)
+        else:
+            curr_w = full_region[2] if full_region else pyautogui.size()[0]
         scales = []
         calib = getattr(self, "match_calibration", {}) or {}
         preferred_scale = float(calib.get("preferred_scale", 1.0) or 1.0)

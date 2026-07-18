@@ -38,6 +38,31 @@ def _to_gray_2d(image):
     raise ValueError(f"Unsupported image shape for gray conversion: {image.shape}")
 
 
+def _get_delete_template_scales(self, scale_spread):
+    """Return robust scales for deletion templates captured at 2560px width.
+
+    Global calibration can legitimately fall back to 1.0 when a task starts on
+    a screen without a reliable anchor.  Deletion templates are known to come
+    from a 2560px capture, so always include the scale implied by the current
+    game-window width instead of relying exclusively on calibration.
+    """
+    full_region = self.regions.get("全界面")
+    current_width = float(full_region[2]) if full_region else 2560.0
+    expected = current_width / 2560.0
+    calibrated = float(
+        (getattr(self, "match_calibration", {}) or {}).get("preferred_scale", expected)
+        or expected
+    )
+    spread = max(0.002, float(scale_spread))
+    scales = []
+    for base in (expected, calibrated):
+        for scale in (base, base * (1.0 - spread), base * (1.0 + spread)):
+            scale = round(max(0.45, min(1.8, scale)), 3)
+            if scale not in scales:
+                scales.append(scale)
+    return scales
+
+
 def _find_filter_tag_fast(
     self,
     template_name,
@@ -55,15 +80,8 @@ def _find_filter_tag_fast(
     if template_gray is None:
         return None
 
-    calibrated = float(
-        (getattr(self, "match_calibration", {}) or {}).get("preferred_scale", 1.0) or 1.0
-    )
-    spread = max(0.002, float(scale_spread))
-    scales = []
-    for scale in (calibrated, calibrated * (1.0 - spread), calibrated * (1.0 + spread)):
-        scale = round(max(0.45, min(1.8, scale)), 3)
-        if scale not in scales:
-            scales.append(scale)
+    scales = _get_delete_template_scales(self, scale_spread)
+    calibrated = scales[0]
 
     effective_threshold = self.get_calibrated_gray_threshold(threshold)
     best_score = 0.0
@@ -263,15 +281,8 @@ def _find_mazda_808_in_delete_list(self, threshold, scale_spread):
     search_bottom = int(screen_h * 0.92)
     search_gray = screen_gray[search_top:search_bottom, search_left:]
 
-    calibrated = float(
-        (getattr(self, "match_calibration", {}) or {}).get("preferred_scale", 1.0) or 1.0
-    )
-    spread = max(0.002, float(scale_spread))
-    scales = []
-    for scale in (calibrated, calibrated * (1.0 - spread), calibrated * (1.0 + spread)):
-        scale = round(max(0.45, min(1.8, scale)), 3)
-        if scale not in scales:
-            scales.append(scale)
+    scales = _get_delete_template_scales(self, scale_spread)
+    calibrated = scales[0]
 
     best_score = 0.0
     best_scale = calibrated
