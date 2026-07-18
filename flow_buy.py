@@ -166,6 +166,7 @@ def logic_buy_car(self, target_count):
         self.car_counter += 1
         self.total_car_bought = int(getattr(self, "total_car_bought", 0) or 0) + 1
         self.update_running_ui("批量买车", self.car_counter, target_count)
+        self.log(f"[进度] 买车 {self.car_counter}/{target_count} 完成")
 
     for _ in range(5):
         if not self.is_running:

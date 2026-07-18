@@ -6,14 +6,14 @@ def setup_ui(bot):
     bot.configure(fg_color="#0B0B0C")
 
     colors = {
-        "bg": "#0B0B0C",
-        "panel": "#151516",
-        "panel_2": "#1C1C1E",
-        "panel_3": "#232326",
-        "line": "#2F2F33",
-        "text": "#F5F5F7",
-        "muted": "#A1A1AA",
-        "muted_2": "#71717A",
+        "bg": "#0D1117",
+        "panel": "#111112",
+        "panel_2": "#21262D",
+        "panel_3": "#272E38",
+        "line": "#30363D",
+        "text": "#F0F3F6",
+        "muted": "#A7B0BC",
+        "muted_2": "#7D8590",
         "blue": "#0A84FF",
         "blue_hover": "#006EDB",
         "green": "#30D158",
@@ -86,11 +86,15 @@ def setup_ui(bot):
     bot.var_chk1 = ctk.BooleanVar(value=bot.config["chk_1"])
     bot.var_chk2 = ctk.BooleanVar(value=bot.config["chk_2"])
     bot.var_chk3 = ctk.BooleanVar(value=bot.config["chk_3"])
+    bot.var_race_to_delete = ctk.BooleanVar(value=bot.config.get("route_race_delete", False))
+    bot.var_delete_to_race = ctk.BooleanVar(value=bot.config.get("route_delete_race", False))
     bot.var_ai_assist = ctk.BooleanVar(value=bot.config.get("ai_assist", False))
     bot.var_smart_page = ctk.BooleanVar(value=bot.config.get("smart_page", False))
     bot.var_ai_only = ctk.BooleanVar(value=bot.config.get("ai_only", False))
     bot.var_ai_auto_capture = ctk.BooleanVar(value=bot.config.get("ai_auto_capture", False))
     bot.var_diagnostic_mode = ctk.BooleanVar(value=bot.config.get("diagnostic_mode", False))
+    bot.var_background_mouse = ctk.BooleanVar(value=bot.config.get("background_mouse_enabled", True))
+    bot.var_compact_on_run = ctk.BooleanVar(value=bot.config.get("compact_on_run", False))
     configured_buy_cj_vehicle = str(bot.config.get("buy_cj_vehicle", "subaru")).lower()
     buy_cj_vehicle_label = "马自达" if configured_buy_cj_vehicle == "mazda" else "斯巴鲁"
     configured_prices = bot.config.get("buy_cj_vehicle_prices", {})
@@ -100,24 +104,27 @@ def setup_ui(bot):
     bot.var_auto_restart = ctk.BooleanVar(value=False)
 
     bot.main_container = ctk.CTkFrame(bot, fg_color="transparent")
-    bot.main_container.pack(fill="both", expand=True, padx=18, pady=18)
+    bot.main_container.pack(fill="both", expand=True, padx=16, pady=14)
 
-    bot.config_frame = ctk.CTkFrame(bot.main_container, fg_color="transparent")
+    bot.config_frame = ctk.CTkFrame(bot.main_container, fg_color="transparent", height=348)
     bot.config_frame.pack(fill="x")
-    bot.config_frame.grid_columnconfigure(0, weight=3, minsize=290)
-    bot.config_frame.grid_columnconfigure(1, weight=2, minsize=250)
-    bot.config_frame.grid_columnconfigure(2, weight=6, minsize=520)
-    bot.config_frame.grid_columnconfigure(3, weight=1, minsize=220)
+    bot.config_frame.grid_propagate(False)
+    bot.config_frame.grid_rowconfigure(0, minsize=270, weight=0)
+    bot.config_frame.grid_rowconfigure(1, minsize=68, weight=0)
+    bot.config_frame.grid_columnconfigure(0, weight=2, minsize=215)
+    bot.config_frame.grid_columnconfigure(1, weight=2, minsize=200)
+    bot.config_frame.grid_columnconfigure(2, weight=4, minsize=424)
+    bot.config_frame.grid_columnconfigure(3, weight=2, minsize=185)
 
-    top_card_height = 285
+    top_card_height = 270
 
     def create_task_card(parent, col, title, subtitle, btn_text, btn_cmd, btn_color, btn_hover, count_value):
         box = card(parent, height=top_card_height)
-        box.grid(row=0, column=col, sticky="nsew", padx=(0, 10 if col < 3 else 0))
+        box.grid(row=0, column=col, sticky="nsew", padx=(0, 10 if col < 4 else 0))
         box.grid_propagate(False)
         box.grid_columnconfigure(0, weight=1)
 
-        label(box, title, font=font_title).grid(row=0, column=0, pady=(14, 0))
+        label(box, title, color=btn_color, font=font_title).grid(row=0, column=0, pady=(14, 0))
         label(box, subtitle, color=colors["muted"], font=font_small).grid(row=1, column=0, pady=(0, 8))
 
         btn = button(box, btn_text, btn_cmd, color=btn_color, hover=btn_hover, width=118, height=36)
@@ -147,7 +154,7 @@ def setup_ui(bot):
     )
     bot.entry_share = entry(box_race, width=190, height=32, placeholder_text="蓝图数字代码")
     bot.entry_share.insert(0, bot.config.get("share_code", "890169683"))
-    bot.entry_share.grid(row=5, column=0, pady=(10, 0))
+    bot.entry_share.place(relx=0.5, y=250, anchor="s")
     box_race.grid_rowconfigure(6, minsize=18)
 
     box_car, bot.btn_car, bot.entry_car, bot.lbl_car = create_task_card(
@@ -162,7 +169,7 @@ def setup_ui(bot):
         bot.config.get("buy_count", 30),
     )
     bot.car_limit_row = ctk.CTkFrame(box_car, fg_color="transparent")
-    bot.car_limit_row.grid(row=5, column=0, pady=(8, 0))
+    bot.car_limit_row.place(relx=0.5, y=250, anchor="s")
     label(bot.car_limit_row, "CR", color=colors["muted"], font=font_small).grid(row=0, column=0, sticky="w", padx=(0, 8))
     bot.entry_cr_amount = entry(bot.car_limit_row, width=124, height=30, placeholder_text="输入CR数量")
     bot.entry_cr_amount.insert(0, str(bot.config.get("cr_amount", 0) or ""))
@@ -184,8 +191,9 @@ def setup_ui(bot):
     box_cj.grid_columnconfigure(0, weight=1, minsize=236)
     box_cj.grid_columnconfigure(1, weight=0, minsize=188)
 
-    assist_row = ctk.CTkFrame(box_cj, fg_color="transparent")
-    assist_row.grid(row=6, column=0, columnspan=2, sticky="w", padx=14, pady=(12, 0))
+    bot.assist_row = ctk.CTkFrame(box_cj, fg_color="transparent")
+    assist_row = bot.assist_row
+    assist_row.place(x=14, y=250, anchor="sw")
     bot.sw_ai_assist = ctk.CTkSwitch(
         assist_row,
         text="AI辅助",
@@ -223,8 +231,8 @@ def setup_ui(bot):
     )
     bot.sw_ai_auto_capture.pack(side="left")
 
-    skill_area = ctk.CTkFrame(box_cj, fg_color="transparent", width=176)
-    skill_area.grid(row=0, column=1, rowspan=5, sticky="ne", padx=(0, 10), pady=(18, 8))
+    skill_area = ctk.CTkFrame(box_cj, fg_color="transparent", width=176, height=190)
+    skill_area.place(relx=1.0, x=-10, y=18, anchor="ne")
     skill_area.grid_propagate(False)
     skill_area.grid_columnconfigure(0, weight=1)
     skill_area.grid_rowconfigure(0, weight=0)
@@ -257,37 +265,67 @@ def setup_ui(bot):
         pady=(8, 2),
     )
 
-    bot.side_panel = card(bot.config_frame, height=top_card_height, fg_color="#121213")
-    bot.side_panel.grid(row=0, column=3, sticky="nsew")
-    bot.side_panel.grid_propagate(False)
-    label(bot.side_panel, "流程设置", font=font_title).pack(anchor="w", padx=14, pady=(14, 8))
+    box_delete, bot.btn_delete, bot.entry_delete, bot.lbl_delete = create_task_card(
+        bot.config_frame,
+        3,
+        "4. 删除车辆",
+        "独立功能 · 仅 Mazda",
+        "开始",
+        lambda: bot.start_pipeline("delete"),
+        colors["red"],
+        colors["red_hover"],
+        bot.config.get("delete_count", 30),
+    )
+    bot.box_delete = box_delete
+    bot.lbl_delete_note = label(
+        box_delete,
+        "已加入大循环",
+        color=colors["muted_2"],
+        font=ctk.CTkFont(family=ui_font, size=11),
+    )
+    bot.lbl_delete_note.place(relx=0.5, y=250, anchor="s")
 
+    bot.side_panel = card(bot.config_frame, height=68, fg_color=colors["panel"])
+    bot.side_panel.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+    bot.side_panel.pack_propagate(False)
     next_grid = ctk.CTkFrame(bot.side_panel, fg_color="transparent")
-    next_grid.pack(fill="x", padx=14, pady=(0, 8))
-    for idx, (text, var, default) in enumerate([
-        ("跑图➡买车", bot.var_chk1, bot.config.get("next_1", 2)),
-        ("买车➡抽奖", bot.var_chk2, bot.config.get("next_2", 3)),
-        ("抽奖➡跑图", bot.var_chk3, bot.config.get("next_3", 1)),
+    next_grid.pack(side="left", fill="both", expand=True, padx=(16, 0), pady=2)
+    next_row = ctk.CTkFrame(next_grid, fg_color="transparent")
+    next_row.pack(anchor="w", expand=True)
+    for idx, (text, var, default, command) in enumerate([
+        ("跑图➡买车", bot.var_chk1, bot.config.get("next_1", 2), lambda: bot.on_flow_route_changed("race_buy")),
+        ("买车➡抽奖", bot.var_chk2, bot.config.get("next_2", 3), bot.save_config),
+        ("抽奖➡跑图", bot.var_chk3, bot.config.get("next_3", 1), bot.save_config),
+        ("跑图➡删车", bot.var_race_to_delete, None, lambda: bot.on_flow_route_changed("race_delete")),
+        ("删车➡跑图", bot.var_delete_to_race, None, bot.save_config),
     ]):
-        row = ctk.CTkFrame(next_grid, fg_color="transparent")
-        row.pack(fill="x", pady=5)
-        ctk.CTkCheckBox(row, text=text, variable=var, width=82, font=font_small).pack(side="left")
-        nxt = entry(row, width=50, height=28)
-        nxt.insert(0, str(default))
-        if idx == 0:
-            bot.entry_next1 = nxt
-        elif idx == 1:
-            bot.entry_next2 = nxt
-        else:
-            bot.entry_next3 = nxt
+        row = ctk.CTkFrame(next_row, fg_color="transparent", width=108, height=38)
+        row.pack(side="left", padx=(0, 2))
+        row.pack_propagate(False)
+        ctk.CTkCheckBox(row, text=text, variable=var, command=command, font=font_small).pack(
+            fill="both", expand=True, padx=4, pady=5
+        )
+        if default is not None:
+            nxt = entry(row, width=42, height=26)
+            nxt.insert(0, str(default))
+            if idx == 0:
+                bot.entry_next1 = nxt
+            elif idx == 1:
+                bot.entry_next2 = nxt
+            elif idx == 2:
+                bot.entry_next3 = nxt
 
     bot.chk1 = bot.var_chk1
     bot.chk2 = bot.var_chk2
     bot.chk3 = bot.var_chk3
 
-    vehicle_selector = ctk.CTkFrame(bot.side_panel, fg_color="transparent")
-    vehicle_selector.pack(fill="x", padx=14, pady=(2, 0))
-    label(vehicle_selector, "专精车辆", color=colors["muted"], font=font_small).pack(anchor="w", pady=(0, 5))
+    vehicle_selector = ctk.CTkFrame(bot.side_panel, fg_color="transparent", width=440)
+    vehicle_selector.pack(side="right", fill="y", padx=14, pady=8)
+    vehicle_selector.pack_propagate(False)
+    vehicle_info = ctk.CTkFrame(vehicle_selector, fg_color="transparent", width=180)
+    vehicle_info.pack(side="left", fill="y")
+    vehicle_info.pack_propagate(False)
+    label(vehicle_info, "专精车辆", color=colors["muted"], font=font_small).pack(anchor="w")
     bot.seg_buy_cj_vehicle = ctk.CTkSegmentedButton(
         vehicle_selector,
         values=["斯巴鲁 22B", "马自达"],
@@ -303,15 +341,16 @@ def setup_ui(bot):
         text_color=colors["text"],
         font=font_small,
     )
-    bot.seg_buy_cj_vehicle.pack(fill="x")
+    bot._buy_cj_vehicle_labels = {"subaru": "斯巴鲁 22B", "mazda": "马自达"}
+    bot.seg_buy_cj_vehicle.pack(side="right", fill="x", expand=True, padx=(10, 0), pady=10)
     price_suffix = " · 需要通行证" if configured_buy_cj_vehicle == "mazda" else ""
     bot.lbl_buy_cj_vehicle_price = label(
-        vehicle_selector,
+        vehicle_info,
         f"单价 {selected_vehicle_price:,} CR{price_suffix}",
         color=colors["muted_2"],
         font=ctk.CTkFont(family=ui_font, size=11),
     )
-    bot.lbl_buy_cj_vehicle_price.pack(anchor="w", pady=(4, 0))
+    bot.lbl_buy_cj_vehicle_price.pack(anchor="w", pady=(2, 0))
 
     bot.global_settings_frame = card(bot.main_container, height=52, fg_color="#111112")
     bot.global_settings_frame.pack(fill="x", pady=(12, 0))
@@ -334,6 +373,24 @@ def setup_ui(bot):
         font=font_small,
     )
     bot.sw_diagnostic_mode.pack(side="right", padx=(0, 12))
+    bot.sw_background_mouse = ctk.CTkSwitch(
+        bot.global_settings_frame,
+        text="后台鼠标",
+        variable=bot.var_background_mouse,
+        command=bot.on_background_mouse_changed,
+        progress_color=colors["green"],
+        font=font_small,
+    )
+    bot.sw_background_mouse.pack(side="right", padx=(0, 12))
+    bot.sw_compact_on_run = ctk.CTkSwitch(
+        bot.global_settings_frame,
+        text="自动缩小",
+        variable=bot.var_compact_on_run,
+        command=bot.on_compact_on_run_changed,
+        progress_color=colors["green"],
+        font=font_small,
+    )
+    bot.sw_compact_on_run.pack(side="right", padx=(0, 12))
 
     bot.runtime_frame = card(bot.main_container, height=66, fg_color="#111112")
     bot.runtime_frame.pack(fill="x", pady=(10, 0))
@@ -428,6 +485,84 @@ def setup_ui(bot):
         font=ctk.CTkFont(family=ui_font, size=14),
     )
     bot.log_box.pack(side="left", fill="both", expand=True)
+
+    # Compact running layout, modelled after self_search's 522x398 window.
+    # It is a sibling of main_container so the full configuration UI can be
+    # hidden without destroying or re-parenting any widgets.
+    bot.compact_container = ctk.CTkFrame(bot, fg_color="transparent")
+    compact_panel = card(bot.compact_container)
+    compact_panel.pack(fill="both", expand=True)
+
+    compact_header = ctk.CTkFrame(compact_panel, fg_color="transparent")
+    compact_header.pack(fill="x", padx=16, pady=(14, 8))
+    label(compact_header, "FH6 Auto", font=font_title).pack(side="left")
+    bot.lbl_compact_state = ctk.CTkLabel(
+        compact_header,
+        text="运行中",
+        width=66,
+        height=28,
+        corner_radius=7,
+        fg_color=colors["green"],
+        text_color="#FFFFFF",
+        font=font_small,
+    )
+    bot.lbl_compact_state.pack(side="right")
+
+    compact_action = ctk.CTkFrame(compact_panel, fg_color="transparent")
+    compact_action.pack(fill="x", padx=16, pady=(0, 10))
+    bot.btn_compact_stop = button(
+        compact_action,
+        "停止 F8",
+        bot.stop_all,
+        color=colors["red"],
+        hover=colors["red_hover"],
+        width=92,
+        height=38,
+    )
+    bot.btn_compact_stop.pack(side="left")
+    compact_time_box = ctk.CTkFrame(compact_action, fg_color="transparent")
+    compact_time_box.pack(side="right")
+    label(compact_time_box, "总运行时间", color=colors["muted"], font=font_small).pack(anchor="e")
+    bot.lbl_compact_total_time = label(
+        compact_time_box,
+        "00:00:00",
+        font=ctk.CTkFont(family=ui_font, size=17, weight="bold"),
+    )
+    bot.lbl_compact_total_time.pack(anchor="e")
+
+    compact_status = ctk.CTkFrame(compact_panel, fg_color=colors["panel_2"], corner_radius=8)
+    compact_status.pack(fill="x", padx=16, pady=(0, 10))
+    for column in range(3):
+        compact_status.grid_columnconfigure(column, weight=1)
+
+    def compact_value(column, title, value):
+        holder = ctk.CTkFrame(compact_status, fg_color="transparent")
+        holder.grid(row=0, column=column, sticky="ew", padx=10, pady=8)
+        label(holder, title, color=colors["muted_2"], font=ctk.CTkFont(family=ui_font, size=11)).pack(anchor="w")
+        widget = label(holder, value, font=font_small)
+        widget.pack(anchor="w")
+        return widget
+
+    bot.lbl_compact_task = compact_value(0, "当前任务", "初始化中...")
+    bot.lbl_compact_progress = compact_value(1, "任务进度", "0 / 0")
+    bot.lbl_compact_loop = compact_value(2, "大循环", "0 / 0")
+
+    label(compact_panel, "运行日志", color=colors["muted"], font=font_small).pack(
+        anchor="w", padx=16, pady=(0, 4)
+    )
+    bot.compact_log_box = ctk.CTkTextbox(
+        compact_panel,
+        state="disabled",
+        wrap="word",
+        corner_radius=8,
+        height=170,
+        fg_color=colors["bg"],
+        border_width=1,
+        border_color=colors["line"],
+        text_color=colors["text"],
+        font=font_body,
+    )
+    bot.compact_log_box.pack(fill="both", expand=True, padx=16, pady=(0, 14))
 
     bot.entry_next1.bind("<FocusOut>", lambda e: bot.normalize_step_entry(bot.entry_next1, 2))
     bot.entry_next2.bind("<FocusOut>", lambda e: bot.normalize_step_entry(bot.entry_next2, 3))

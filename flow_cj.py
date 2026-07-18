@@ -57,7 +57,11 @@ def get_yolo_car_select_model(self):
     if not model_path:
         vehicle_mode = self.get_buy_cj_vehicle_mode()
         expected = "models/fh6_car_select_mazda_yolo.pt" if vehicle_mode == "mazda" else "models/fh6_car_select_yolo.pt"
-        self.log(f"[AISelect] {vehicle_mode} model not found. Put best.pt at {expected} or update config.json ai_model_paths.")
+        self.log(
+            f"[AISelect] {vehicle_mode} model not found. Put best.pt at {expected} or update config.json ai_model_paths.",
+            level="WARN",
+        )
+        self.log(f"[AI模型] {vehicle_mode} 选车模型未找到。", level="WARN", frontend=True)
         return None
     with self.yolo_car_select_model_lock:
         if self.yolo_car_select_model is not None and self.yolo_car_select_model_path == model_path:
@@ -66,10 +70,14 @@ def get_yolo_car_select_model(self):
             from ultralytics import YOLO
             self.yolo_car_select_model = YOLO(model_path)
             self.yolo_car_select_model_path = model_path
-            self.log(f"[AISelect] model loaded: {model_path}")
+            vehicle_mode = self.get_buy_cj_vehicle_mode()
+            self.log(f"[AISelect] model loaded: {model_path}", level="DEBUG")
+            self.log(f"[AI模型] {vehicle_mode} 选车模型已加载。", frontend=True)
             return self.yolo_car_select_model
         except Exception as e:
-            self.log(f"[AISelect] cannot load YOLO model: {e}")
+            vehicle_mode = self.get_buy_cj_vehicle_mode()
+            self.log(f"[AISelect] cannot load YOLO model: {e}", level="ERROR")
+            self.log(f"[AI模型] {vehicle_mode} 选车模型加载失败。", level="ERROR", frontend=True)
             self.yolo_car_select_model = None
             self.yolo_car_select_model_path = None
             return None
@@ -80,7 +88,7 @@ def preload_ai_model_async(self):
     self.ai_model_preload_started = True
 
     def worker():
-        self.log("[AISelect] preloading model...")
+        self.log("[AISelect] preloading model...", level="DEBUG")
         self.get_yolo_car_select_model()
 
     threading.Thread(target=worker, daemon=True).start()
@@ -804,6 +812,7 @@ def logic_super_wheelspin(self, target_count):
                 return True
             self.cj_counter += 1
             self.update_running_ui("超级抽奖", self.cj_counter, target_count)
+            self.log(f"[进度] 超级抽奖 {self.cj_counter}/{target_count} 完成")
 
         if not self.return_to_vehicle_menu_after_mastery():
             return False

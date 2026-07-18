@@ -8,6 +8,8 @@ import numpy as np
 import pyautogui
 from PIL import ImageGrab
 
+from background_capture import WindowCaptureManager
+
 from app_resources import (
     APP_DIR,
     INTERNAL_DIR,
@@ -244,17 +246,47 @@ class ImageMatcherMixin:
             self.load_template_file_cache()
 
     def capture_region(self, region=None, mask_areas=None):
-        try:
-            if region:
-                x, y, w, h = region
-                bbox = (int(x), int(y), int(x + w), int(y + h))
-                screen = ImageGrab.grab(bbox=bbox, all_screens=True)
-            else:
-                screen = ImageGrab.grab(all_screens=True)
-        except Exception:
-            screen = pyautogui.screenshot(region=region)
+        screen_bgr = None
+        use_background = bool(
+            getattr(self, "config", {}).get("background_capture_enabled", True)
+        )
+        hwnd = getattr(self, "game_hwnd", None)
 
-        screen_bgr = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2BGR)
+        if use_background and hwnd:
+            manager = getattr(self, "background_capture", None)
+            if manager is None or manager.hwnd != int(hwnd) or not manager.is_valid():
+                manager = WindowCaptureManager(hwnd)
+                self.background_capture = manager
+            screen_bgr = manager.capture_region(region)
+            if screen_bgr is not None:
+                mean_value = float(screen_bgr.mean()) if screen_bgr.size else 0.0
+                deviation = float(screen_bgr.std()) if screen_bgr.size else 0.0
+                # PrintWindow can report success while returning an all-black,
+                # all-white, or otherwise flat surface (notably when minimized).
+                if mean_value < 3.0 or mean_value > 252.0 or deviation < 1.0:
+                    self._report_background_capture_problem(
+                        f"PrintWindow 返回无效画面 mean={mean_value:.1f} std={deviation:.1f}"
+                    )
+                    screen_bgr = None
+                else:
+                    previous_failures = int(getattr(self, "_background_capture_failures", 0))
+                    self._background_capture_failures = 0
+                    if previous_failures >= 3:
+                        self.log("[模式] 后台识图已恢复。", level="INFO")
+
+        if screen_bgr is None:
+            # Compatibility path for startup (before HWND discovery), disabled
+            # background capture, or a driver/window that rejects PrintWindow.
+            try:
+                if region:
+                    x, y, w, h = region
+                    bbox = (int(x), int(y), int(x + w), int(y + h))
+                    screen = ImageGrab.grab(bbox=bbox, all_screens=True)
+                else:
+                    screen = ImageGrab.grab(all_screens=True)
+            except Exception:
+                screen = pyautogui.screenshot(region=region)
+            screen_bgr = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2BGR)
 
         # 对指定区域打黑块，避免重复识别同一个目标。
         if mask_areas:
@@ -271,6 +303,18 @@ class ImageMatcherMixin:
                     pass
 
         return screen_bgr
+
+    def _report_background_capture_problem(self, detail):
+        failures = int(getattr(self, "_background_capture_failures", 0)) + 1
+        self._background_capture_failures = failures
+        # Avoid flooding both UI and diagnostic logs during recognition loops.
+        if failures in (1, 3) or failures % 20 == 0:
+            self.log(f"[BackgroundCapture] {detail}，已使用桌面截图回退。", level="WARN")
+        if failures == 3:
+            self.log(
+                "[模式] 后台识图连续失败，当前已回退桌面截图；窗口被遮挡时可能无法识别。",
+                level="WARN",
+            )
 
     def get_scales_to_try(self, fast_mode=True):
         full_region = self.regions.get("全界面")
@@ -500,8 +544,8 @@ class ImageMatcherMixin:
             return None
 
         try:
-            screen = pyautogui.screenshot(region=region)
-            screen_gray = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2GRAY)
+            screen_bgr = self.capture_region(region)
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
 
             main_tpl = self.load_template_gray(main_path)
             sub_tpl = self.load_template_gray(sub_path)
@@ -695,8 +739,8 @@ class ImageMatcherMixin:
             return None
 
         try:
-            screen = pyautogui.screenshot(region=region)
-            screen_gray = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2GRAY)
+            screen_bgr = self.capture_region(region)
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
 
             main_tpl = self.load_template_gray(main_path)
             sub_tpl = self.load_template_gray(sub_path)

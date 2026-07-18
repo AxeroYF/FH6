@@ -176,8 +176,14 @@ def _handle_optional_challenge_rating(self, continuation_text="继续重试"):
     return False
 
 
-def _prepare_skillcar_for_race(self):
-    self.log("新版挑战流程：先确认当前驾驶车辆。")
+def _prepare_skillcar_for_race(self, *, stay_in_car_list=False, _verified_after_switch=False):
+    """Ensure R917 is active and optionally keep the vehicle list open.
+
+    Race mode keeps its original behavior.  Delete mode uses
+    ``stay_in_car_list=True`` so it can open the vehicle filters directly from
+    the confirmed R917 card without pressing Esc or navigating to EventLab.
+    """
+    self.log("正在确认当前驾驶车辆。")
     if not self.enter_menu():
         return False
 
@@ -257,6 +263,9 @@ def _prepare_skillcar_for_race(self):
         fast_mode=True,
     )
     if driving_tag:
+        if stay_in_car_list:
+            self.log("R917 已是当前驾驶车辆，保留车辆列表供删除流程继续筛选。")
+            return "car_list"
         self.log("R917 已是当前驾驶车辆，保留菜单上下文直接前往 EventLab。")
         press_with_pause(self, "esc", after=0.7)
         return "car_menu"
@@ -267,6 +276,16 @@ def _prepare_skillcar_for_race(self):
     self.log("已切换到 R917 刷图车辆。")
     if not _interruptible_wait(self, 1.0):
         return False
+    if stay_in_car_list:
+        if _verified_after_switch:
+            self.log("切换 R917 后仍无法在车辆列表确认当前驾驶标记。", level="WARN")
+            return False
+        self.log("重新进入车辆列表，确认 R917 当前驾驶状态。")
+        return _prepare_skillcar_for_race(
+            self,
+            stay_in_car_list=True,
+            _verified_after_switch=True,
+        )
     return "roam"
 
 
@@ -439,6 +458,7 @@ def logic_race(self, target_count):
         if result_state == "failed":
             self.race_counter += 1
             self.update_running_ui("循环跑图", self.race_counter, target_count)
+            self.log(f"[进度] 跑图 {self.race_counter}/{target_count} 完成")
             if is_last:
                 self.log("最后一轮识别到挑战失败，本轮计数并按 ESC 退出循环。", level="WARN")
                 if not _confirm_challenge_action(self, "failed", "esc"):
@@ -464,6 +484,7 @@ def logic_race(self, target_count):
             return False
         self.race_counter += 1
         self.update_running_ui("循环跑图", self.race_counter, target_count)
+        self.log(f"[进度] 跑图 {self.race_counter}/{target_count} 完成")
         if is_last:
             self.handle_author_prompt(release_drive_keys=False)
             if not self.is_running:

@@ -60,7 +60,12 @@ import win32gui
 import threading
 
 from image_matcher import ImageMatcherMixin
+from background_mouse import WindowMouseManager
+from background_capture import WindowCaptureManager
+from background_keyboard import WindowKeyboardManager
+from developer_ui_editor import apply_saved_text_overrides, open_developer_text_editor
 from flow_buy import logic_buy_car as flow_logic_buy_car
+from flow_delete import logic_delete_car as flow_logic_delete_car
 from flow_cj import (
     cleanup_recent_template_car_miss as flow_cleanup_recent_template_car_miss,
     enter_design_paint_choose_car as flow_enter_design_paint_choose_car,
@@ -253,8 +258,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         super().__init__()
         #窗口相关
         self.title(f"FH6Auto by Krami v{CURRENT_VERSION}")
-        self.geometry("1480x800")
-        self.minsize(1320, 760)
+        self.geometry("1240x800")
+        self.minsize(1120, 760)
         self.attributes("-topmost", False)
         self.attributes("-alpha", 0.98)
         self.resizable(True, True)
@@ -269,10 +274,19 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.is_running = False
         self.current_thread = None
         self.is_paused = False  # <--- 【新增】全局暂停状态
+        self.game_hwnd = None
+        self.background_mouse = None
+        self.background_capture = None
+        self.background_keyboard = None
+        self._background_attach_lock = threading.RLock()
+        self._background_preload_started = False
+        self._background_preload_announced = False
 
         self.race_counter = 0
         self.car_counter = 0
         self.cj_counter = 0
+        self.delete_counter = 0
+        self.delete_counter = 0
         self.global_loop_current = 0
 
         self.template_cache = {}
@@ -289,7 +303,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self._log_trim_threshold = 1200
         self._log_keep_lines = 800
         self.is_log_collapsed = False
-        self.expanded_window_height = 760
+        self.expanded_window_height = 800
         self.invalid_blueprint_abort = False
         self.strict_car_debug_seq = 0
         self.strict_car_debug_last_miss_save = 0.0
@@ -299,6 +313,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.yolo_car_select_model_path = None
         self.yolo_car_select_model_lock = threading.Lock()
         self.ai_model_preload_started = False
+        self._developer_editor_window = None
+        self._developer_f9_last_time = 0.0
         self.race_notice_shown = False
         self.diagnostic_trace = None
         self.total_car_bought = 0
@@ -324,16 +340,19 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.load_config()
 
         self.setup_ui()
+        self._developer_text_override_count = apply_saved_text_overrides(self)
         self.update_match_calibration_ui()
         self.start_hotkey_listener()
         self.update_skill_grid()
         self.center_window()
         self.preload_ai_model_async()
+        self.after(500, self.preload_background_services_async)
 
         self.log("免责声明：本脚本仅供 Python 自动化技术交流与学习使用。请勿用于商业盈利或破坏游戏平衡，因使用本脚本造成的账号封禁等损失，由使用者自行承担。")
-        self.log("默认刷图车辆：【1998 斯巴鲁】【调校R-917】【保持截图对应涂装】【收藏车辆】")
+        self.log("默认刷图车辆：【斯巴鲁22b，调校代码325360351】【等级R-917】【保持原厂涂装】【收藏车辆】")
         self.log("蓝图代码可自行修改,工具运行目录不要有中文。")
         self.log("游戏设置为【自动转向】【手动挡】，游戏语言设置为【简体中文】")
+        self.log("【设置】-【抬头显示与游戏】，关闭【技术】和【失去焦点时暂停】")
         self.log("大部分以图像识别作为引导，减少机器盲目操作的风险，但仍无法完全避免，使用前请做好准备。")
 
     # ==========================================
@@ -369,6 +388,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             "循环跑图": 0.0,
             "批量买车": 0.0,
             "超级抽奖": 0.0,
+            "删除车辆": 0.0,
             "测试启动": 0.0,
             "F3测图": 0.0,
         }
@@ -632,9 +652,12 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             "race_count": 99,
             "buy_count": 30,
             "cj_count": 30,
+            "delete_count": 30,
             "chk_1": True,
             "chk_2": True,
             "chk_3": True,
+            "route_race_delete": False,
+            "route_delete_race": False,
             "next_1": 2,
             "next_2": 3,
             "next_3": 1,
@@ -649,6 +672,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             "share_code": "103435586",
             "cr_amount": 0,
             "auto_restart": False,
+            "background_mouse_enabled": True,
+            "background_capture_enabled": True,
+            "background_keyboard_enabled": True,
+            "compact_on_run": False,
             "restart_cmd": "start steam://run/2483190",
             "race_timeout": 300,
             "challenge_load_seconds": 15,
@@ -676,6 +703,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             except Exception as e:
                 self.log(f"用户 config.json 损坏，已自动恢复默认配置。")
         self.config["ai_prefer"] = bool(self.config.get("ai_assist", False))
+        self.config["route_race_delete"] = bool(self.config.get("route_race_delete", False))
+        self.config["route_delete_race"] = bool(self.config.get("route_delete_race", False))
         selected_vehicle = str(self.config.get("buy_cj_vehicle", "subaru")).lower()
         self.config["buy_cj_vehicle"] = selected_vehicle if selected_vehicle in ("subaru", "mazda") else "subaru"
         selected_vehicle = self.config["buy_cj_vehicle"]
@@ -738,6 +767,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             self.config["race_count"] = int(self.entry_race.get())
             self.config["buy_count"] = int(self.entry_car.get())
             self.config["cj_count"] = int(self.entry_cj.get())
+            if hasattr(self, "entry_delete"):
+                self.config["delete_count"] = max(1, int(self.entry_delete.get()))
             self.config["global_loops"] = int(self.entry_global_loop.get())
             if hasattr(self, "entry_cr_amount"):
                 self.config["cr_amount"] = max(0, int(self.entry_cr_amount.get() or 0))
@@ -754,6 +785,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.config["chk_1"] = self.var_chk1.get()
         self.config["chk_2"] = self.var_chk2.get()
         self.config["chk_3"] = self.var_chk3.get()
+        if hasattr(self, "var_race_to_delete"):
+            self.config["route_race_delete"] = bool(self.var_race_to_delete.get())
+        if hasattr(self, "var_delete_to_race"):
+            self.config["route_delete_race"] = bool(self.var_delete_to_race.get())
         self.config["auto_restart"] = self.config.get("auto_restart", False)
         if hasattr(self, "var_ai_assist"):
             self.config["ai_assist"] = self.var_ai_assist.get()
@@ -764,9 +799,13 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             self.config["ai_auto_capture"] = self.var_ai_auto_capture.get()
         if hasattr(self, "var_smart_page"):
             self.config["smart_page"] = self.var_smart_page.get()
+        if hasattr(self, "var_background_mouse"):
+            self.config["background_mouse_enabled"] = bool(self.var_background_mouse.get())
+        if hasattr(self, "var_compact_on_run"):
+            self.config["compact_on_run"] = bool(self.var_compact_on_run.get())
         if hasattr(self, "var_buy_cj_vehicle"):
             selected_vehicle = str(self.var_buy_cj_vehicle.get() or "")
-            self.config["buy_cj_vehicle"] = "mazda" if "马自达" in selected_vehicle else "subaru"
+            self.config["buy_cj_vehicle"] = self.resolve_buy_cj_vehicle_mode(selected_vehicle)
         self.sync_current_skill_dirs_for_vehicle(self.config.get("buy_cj_vehicle", "subaru"))
         if hasattr(self, "le_restart_cmd"):
             self.config["restart_cmd"] = self.le_restart_cmd.get().strip()
@@ -783,6 +822,41 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         from ui_layout import setup_ui
         setup_ui(self)
 
+    def on_flow_route_changed(self, route):
+        """Persist route switches without imposing policy on the user's flow."""
+        self.save_config()
+
+    def resolve_pipeline_next_index(self, curr_idx):
+        """Resolve the configured next step; None means stop after this module."""
+        if curr_idx == 0:
+            if self.var_chk1.get():
+                try:
+                    return max(0, min(3, int(self.entry_next1.get()) - 1))
+                except Exception:
+                    return 1
+            if self.var_race_to_delete.get():
+                return 3
+            return None
+        if curr_idx == 1:
+            if self.var_chk2.get():
+                try:
+                    return max(0, min(3, int(self.entry_next2.get()) - 1))
+                except Exception:
+                    return 2
+            return None
+        if curr_idx == 2:
+            if self.var_race_to_delete.get() and self.var_delete_to_race.get():
+                return 3
+            if self.var_chk3.get():
+                try:
+                    return max(0, min(2, int(self.entry_next3.get()) - 1))
+                except Exception:
+                    return 0
+            return None
+        if curr_idx == 3:
+            return 0 if self.var_delete_to_race.get() else None
+        return None
+
     def update_timer(self):
         if not self.is_running:
             return
@@ -794,6 +868,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         race_total = totals.get("循环跑图", 0.0)
         buy_total = totals.get("批量买车", 0.0)
         cj_total = totals.get("超级抽奖", 0.0)
+        delete_total = totals.get("删除车辆", 0.0)
 
         active_task = getattr(self, "active_task_name", "")
         if active_task == "循环跑图":
@@ -802,15 +877,20 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             buy_total += task_elapsed
         elif active_task == "超级抽奖":
             cj_total += task_elapsed
+        elif active_task == "删除车辆":
+            delete_total += task_elapsed
 
         try:
             self.lbl_runtime_task_time.configure(text=self.format_elapsed(task_elapsed))
             self.lbl_runtime_total_time.configure(text=self.format_elapsed(total_elapsed))
+            if hasattr(self, "lbl_compact_total_time"):
+                self.lbl_compact_total_time.configure(text=self.format_elapsed(total_elapsed))
             self.lbl_runtime_totals.configure(
                 text=(
                     f"跑图 {self.format_elapsed(race_total)} | "
                     f"买车 {self.format_elapsed(buy_total)} | "
-                    f"超抽 {self.format_elapsed(cj_total)}"
+                    f"超抽 {self.format_elapsed(cj_total)} | "
+                    f"删车 {self.format_elapsed(delete_total)}"
                 )
             )
         except Exception: pass
@@ -826,10 +906,55 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                     self.finalize_active_task_time()
                     self.active_task_name = task_name
                 self.ui_call(self.lbl_runtime_task.configure, text=task_name)
+                if hasattr(self, "lbl_compact_task"):
+                    self.ui_call(self.lbl_compact_task.configure, text=task_name)
             if max_val > 0:
                 self.ui_call(self.lbl_runtime_progress.configure, text=f"{current_val} / {max_val}")
+                if hasattr(self, "lbl_compact_progress"):
+                    self.ui_call(self.lbl_compact_progress.configure, text=f"{current_val} / {max_val}")
         except Exception:
             pass
+
+    def preload_background_services_async(self):
+        """Attach background I/O and capture shortly after UI startup, without focus theft."""
+        if self._background_preload_started or self.is_running:
+            return
+        self._background_preload_started = True
+
+        def worker():
+            connected = False
+            try:
+                connected = bool(
+                    self.check_and_focus_game(
+                        focus_game=False,
+                        quiet=True,
+                        calibrate=False,
+                    )
+                )
+            finally:
+                self._background_preload_started = False
+
+            if connected:
+                if not self._background_preload_announced:
+                    self._background_preload_announced = True
+                    self.log("[模式] 后台鼠标、键盘与识图模块已在启动阶段预连接。")
+                return
+
+            if not self.is_running:
+                try:
+                    self.after(2000, self.preload_background_services_async)
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def update_delete_progress(self, current, target):
+        current = max(0, int(current))
+        target = max(1, int(target))
+        self.update_running_ui("删除车辆", current, target)
+        label = getattr(self, "lbl_delete", None)
+        if label is not None:
+            self.ui_call(label.configure, text=f"执行: {current} / {target}")
 
     def update_running_state(self, state):
         try:
@@ -837,9 +962,15 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                 self.lbl_run_state.configure(text="运行中", fg_color="#238636", text_color="#FFFFFF")
                 self.btn_runtime_stop.configure(state="normal")
                 self.btn_stop.configure(text="停止任务 (F8)", fg_color="#DA3633", hover_color="#B02A37")
+                if hasattr(self, "lbl_compact_state"):
+                    self.lbl_compact_state.configure(text="运行中", fg_color="#238636")
+                if self.is_compact_on_run_enabled():
+                    self.set_compact_window(True)
             elif state == "paused":
                 self.lbl_run_state.configure(text="已暂停", fg_color="#9A6700", text_color="#FFFFFF")
                 self.btn_runtime_stop.configure(state="normal")
+                if hasattr(self, "lbl_compact_state"):
+                    self.lbl_compact_state.configure(text="已暂停", fg_color="#9A6700")
             else:
                 self.lbl_run_state.configure(text="待机", fg_color="#222B36", text_color="#C9D1D9")
                 self.lbl_runtime_task.configure(text="等待中")
@@ -847,9 +978,120 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                 self.lbl_runtime_loop.configure(text="0 / 0")
                 self.lbl_runtime_task_time.configure(text="00:00:00")
                 self.lbl_runtime_total_time.configure(text="00:00:00")
-                self.lbl_runtime_totals.configure(text="跑图 00:00:00 | 买车 00:00:00 | 超抽 00:00:00")
+                self.lbl_runtime_totals.configure(
+                    text="跑图 00:00:00 | 买车 00:00:00 | 超抽 00:00:00 | 删车 00:00:00"
+                )
+                if hasattr(self, "lbl_compact_task"):
+                    self.lbl_compact_task.configure(text="等待中")
+                    self.lbl_compact_progress.configure(text="0 / 0")
+                    self.lbl_compact_loop.configure(text="0 / 0")
+                    self.lbl_compact_total_time.configure(text="00:00:00")
                 self.btn_runtime_stop.configure(state="disabled")
                 self.btn_stop.configure(text="等待指令 (F8)", fg_color="#222B36", hover_color="#2F3B4A")
+                if hasattr(self, "lbl_compact_state"):
+                    self.lbl_compact_state.configure(text="待机", fg_color="#222B36")
+                self.set_compact_window(False)
+        except Exception as e:
+            self.log(f"运行状态界面更新失败：{e}", level="ERROR", frontend=True)
+
+    def is_compact_on_run_enabled(self):
+        variable = getattr(self, "var_compact_on_run", None)
+        if variable is not None:
+            return bool(variable.get())
+        return bool(self.config.get("compact_on_run", False))
+
+    def on_compact_on_run_changed(self):
+        enabled = self.is_compact_on_run_enabled()
+        self.config["compact_on_run"] = enabled
+        self.save_config()
+        self.log(f"[模式] 运行时缩小{'已开启' if enabled else '已关闭'}")
+        if self.is_running:
+            self.set_compact_window(enabled)
+
+    def set_compact_window(self, compact):
+        compact = bool(compact)
+        if not hasattr(self, "compact_container"):
+            return
+        active = bool(getattr(self, "_compact_window_active", False))
+        if compact == active:
+            return
+
+        if compact:
+            self.update_idletasks()
+            self._full_window_geometry = self.geometry()
+            try:
+                raw_minimum = self.tk.call("wm", "minsize", self._w)
+                minimum_values = self.tk.splitlist(raw_minimum)
+                self._full_window_minsize = (
+                    int(minimum_values[0]),
+                    int(minimum_values[1]),
+                )
+            except Exception:
+                self._full_window_minsize = (
+                    (1040, 650) if self.is_log_collapsed else (1120, 760)
+                )
+            compact_width = 522
+            compact_height = 398
+            x, y = self.get_compact_top_right_position(compact_width, compact_height)
+            self.main_container.pack_forget()
+            self.compact_container.pack(fill="both", expand=True, padx=14, pady=14)
+            self.minsize(500, 376)
+            self.geometry(f"{compact_width}x{compact_height}+{x}+{y}")
+            self._compact_window_active = True
+            self.log("[模式] 已切换到运行时紧凑窗口")
+        else:
+            self.compact_container.pack_forget()
+            self.main_container.pack(fill="both", expand=True, padx=16, pady=14)
+            restore_minimum = getattr(self, "_full_window_minsize", (1120, 760))
+            self.minsize(int(restore_minimum[0]), int(restore_minimum[1]))
+            restore_geometry = getattr(self, "_full_window_geometry", "1240x800")
+            self.geometry(restore_geometry)
+            self._compact_window_active = False
+
+    def get_compact_top_right_position(self, width, height, margin=16):
+        """Position the compact UI at the current monitor's work-area top-right."""
+        try:
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", ctypes.c_long),
+                    ("top", ctypes.c_long),
+                    ("right", ctypes.c_long),
+                    ("bottom", ctypes.c_long),
+                ]
+
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", ctypes.c_ulong),
+                    ("rcMonitor", RECT),
+                    ("rcWork", RECT),
+                    ("dwFlags", ctypes.c_ulong),
+                ]
+
+            hwnd = int(self.winfo_id())
+            monitor = ctypes.windll.user32.MonitorFromWindow(hwnd, 2)
+            info = MONITORINFO()
+            info.cbSize = ctypes.sizeof(MONITORINFO)
+            if monitor and ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                work = info.rcWork
+                return (
+                    int(max(work.left, work.right - int(width) - int(margin))),
+                    int(work.top + int(margin)),
+                )
+        except Exception:
+            pass
+
+        return (
+            max(0, int(self.winfo_screenwidth()) - int(width) - int(margin)),
+            max(0, int(margin)),
+        )
+
+    def restore_compact_window_normal_layer(self):
+        """Raise compact UI once without making it permanently topmost."""
+        if not bool(getattr(self, "_compact_window_active", False)):
+            return
+        try:
+            self.attributes("-topmost", False)
+            self.lift()
         except Exception:
             pass
 
@@ -857,6 +1099,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
     # --- 核心操作与流程控制 ---
     # ==========================================
     def hw_key_down(self, key):
+        if self.config.get("background_keyboard_enabled", True):
+            manager = self.ensure_background_keyboard()
+            if manager:
+                return manager.key_down(key)
         if key not in DIK_CODES:
             return
         scan_code, extended = DIK_CODES[key]
@@ -868,6 +1114,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
 
     def hw_key_up(self, key):
+        if self.config.get("background_keyboard_enabled", True):
+            manager = self.ensure_background_keyboard()
+            if manager:
+                return manager.key_up(key)
         if key not in DIK_CODES:
             return
         scan_code, extended = DIK_CODES[key]
@@ -882,11 +1132,67 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.check_pause()  # <--- 【新增】如果正在暂停，脚本会在此处无限等待直到恢复
         if not self.is_running:
             return
+        if self.config.get("background_keyboard_enabled", True):
+            manager = self.ensure_background_keyboard()
+            if manager:
+                return manager.press(key, delay=delay, use_send=False)
         self.hw_key_down(key)
         time.sleep(delay)
         self.hw_key_up(key)
     #副屏支持
+    def is_background_mouse_enabled(self):
+        if hasattr(self, "var_background_mouse"):
+            return bool(self.var_background_mouse.get())
+        return bool(self.config.get("background_mouse_enabled", True))
+
+    def on_background_mouse_changed(self):
+        enabled = self.is_background_mouse_enabled()
+        self.config["background_mouse_enabled"] = enabled
+        self.save_config()
+        state = "已开启，不会移动系统物理鼠标" if enabled else "已关闭，恢复物理鼠标点击"
+        self.log(f"[模式] 后台鼠标{state}")
+
+    def ensure_background_mouse(self):
+        hwnd = getattr(self, "game_hwnd", None)
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            return None
+        manager = getattr(self, "background_mouse", None)
+        if manager is None or manager.hwnd != int(hwnd) or not manager.is_valid():
+            manager = WindowMouseManager(hwnd)
+            self.background_mouse = manager
+        return manager
+
+    def ensure_background_keyboard(self):
+        hwnd = getattr(self, "game_hwnd", None)
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            return None
+        manager = getattr(self, "background_keyboard", None)
+        if manager is None or manager.hwnd != int(hwnd) or not manager.is_valid():
+            if manager is not None:
+                manager.stop()
+            manager = WindowKeyboardManager(hwnd)
+            manager.start()
+            self.background_keyboard = manager
+        return manager
+
+    def screen_to_game_client(self, x, y):
+        hwnd = getattr(self, "game_hwnd", None)
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            return None
+        try:
+            return win32gui.ScreenToClient(hwnd, (int(x), int(y)))
+        except Exception:
+            gx, gy, _, _ = self.regions["全界面"]
+            return int(x - gx), int(y - gy)
+
     def hw_mouse_move(self, x, y):
+        if self.is_background_mouse_enabled():
+            manager = self.ensure_background_mouse()
+            client_pos = self.screen_to_game_client(x, y)
+            if manager and client_pos:
+                return manager.move(client_pos[0], client_pos[1], use_send=True)
+            return False
+
         # 获取多显示器组成的整个“虚拟桌面”坐标和尺寸
         SM_XVIRTUALSCREEN = 76
         SM_YVIRTUALSCREEN = 77
@@ -908,11 +1214,56 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         ii_.mi = MouseInput(calc_x, calc_y, 0, flags, 0, ctypes.pointer(extra))
         cmd = Input(ctypes.c_ulong(0), ii_)
         SendInput(1, ctypes.pointer(cmd), ctypes.sizeof(cmd))
-    def game_click(self, pos, double=False):
+    def game_click(
+        self,
+        pos,
+        double=False,
+        confirm_key=None,
+        move_away=True,
+        clicks=None,
+        hold=0.08,
+        gap=0.08,
+        use_send=True,
+    ):
         self.check_pause()  # <--- 【新增】拦截鼠标点击
         if not self.is_running or not pos:
-            return
+            return False
         x, y = int(pos[0]), int(pos[1])
+
+        if self.is_background_mouse_enabled():
+            manager = self.ensure_background_mouse()
+            client_pos = self.screen_to_game_client(x, y)
+            if not manager or not client_pos:
+                self.log("后台鼠标点击失败：游戏窗口句柄无效。", level="ERROR", frontend=True)
+                return False
+            try:
+                mode = "SendMessage" if use_send else "PostMessage"
+                self.log(
+                    f"[BackgroundMouse] {mode} client=({client_pos[0]},{client_pos[1]}) "
+                    f"double={bool(double)} clicks={clicks} hold={hold:.2f} gap={gap:.2f}",
+                    level="DEBUG",
+                )
+                ok = manager.click(
+                    client_pos[0],
+                    client_pos[1],
+                    double=double,
+                    use_send=use_send,
+                    clicks=clicks,
+                    hold=hold,
+                    gap=gap,
+                )
+                if not ok:
+                    self.log("后台鼠标点击失败：窗口消息未发送。", level="ERROR", frontend=True)
+                    return False
+                if move_away:
+                    manager.move(5, 5, use_send=True)
+                    time.sleep(0.12)
+                if confirm_key:
+                    self.hw_press(confirm_key, delay=0.1)
+                return True
+            except Exception as e:
+                self.log(f"后台鼠标点击异常：{e}", level="ERROR", frontend=True)
+                return False
 
         # 使用多屏兼容的硬件级移动
         self.hw_mouse_move(x, y)
@@ -924,20 +1275,28 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             time.sleep(0.1)
         time.sleep(0.1)
         # 移开鼠标 10 像素，防止游戏里的悬浮提示框遮挡下一次截图
-        try:
-            gx, gy, gw, gh = self.regions["全界面"]
-            # 移动到游戏左上角向内偏移 5 个像素，确保在游戏内但绝对不会挡住任何中间UI
-            self.hw_mouse_move(gx + 5, gy + 5)
-        except Exception:
-            # 兜底：如果获取不到窗口坐标，移到绝对屏幕左上角
-            self.hw_mouse_move(5, 5)
-        time.sleep(0.2)
+        if move_away:
+            try:
+                gx, gy, gw, gh = self.regions["全界面"]
+                # 移动到游戏左上角向内偏移 5 像素，避免遮挡后续识图。
+                self.hw_mouse_move(gx + 5, gy + 5)
+            except Exception:
+                self.hw_mouse_move(5, 5)
+            time.sleep(0.2)
+        if confirm_key:
+            self.hw_press(confirm_key, delay=0.1)
+        return True
 
     def move_to_game_coord(self, x, y):
         """
         将鼠标移动到以【游戏窗口左上角】为起点的 (x, y) 坐标。
         例如传入 (5, 5)，就会移动到游戏内左上角 5 像素的安全位置。
         """
+        if self.is_background_mouse_enabled():
+            manager = self.ensure_background_mouse()
+            if manager:
+                return manager.move(int(x), int(y), use_send=True)
+            return False
         try:
             gx, gy, gw, gh = self.regions["全界面"]
             abs_x = gx + x
@@ -1041,6 +1400,44 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         trace["log_count"] += 1
         trace["log_levels"][event["level"]] = trace["log_levels"].get(event["level"], 0) + 1
 
+    def should_show_frontend_log(self, message, level="INFO"):
+        """Keep the UI log concise while diagnostic mode retains every message."""
+        text = str(message or "")
+        frontend_prefixes = (
+            "免责声明：",
+            "默认刷图车辆：",
+            "蓝图代码可自行修改",
+            "游戏设置为",
+            "【设置】",
+            "大部分以图像识别作为引导",
+            "诊断记录已",
+            "买车/超抽车辆方案已切换为：",
+            "技能树路径已自动切换为：",
+            "[AI模型]",
+            "[模式]",
+            "[流程]",
+            "[进度]",
+            "[大循环]",
+            "已启用 CR 买车限制：",
+            "未启用 CR 买车限制",
+            "CR 买车上限已触发",
+            "达到设定的总循环次数",
+            "执行模块 ",
+            "为防止游戏陷入死循环",
+            "致命错误：",
+            "!!! 警告：",
+            "!!! 任务已停止",
+            "⏸ 任务已暂停",
+            "▶ 任务已恢复",
+            "未发现 forzahorizon6.exe",
+            "找到进程但无法解析PID",
+            "未检测到游戏进程",
+            "自动启动超时",
+            "!!! 检测到 VRAMNE.png",
+            "!!! 严重警告:",
+        )
+        return text.startswith(frontend_prefixes)
+
     def capture_diagnostic_snapshot(self, name, *, region=None, image_bgr=None, reason=None, level="WARN", meta=None, dedupe_key=None):
         trace = getattr(self, "diagnostic_trace", None)
         if not trace:
@@ -1079,11 +1476,16 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         trace["captures"].append(capture_event)
         return file_path
 
-    def log(self, message, level=None):
+    def log(self, message, level=None, frontend=None):
         resolved_level = self.infer_log_level(message, level=level)
         curr_time = time.strftime("%H:%M:%S")
         full_msg = f"[{curr_time}] {message}" if resolved_level == "INFO" else f"[{curr_time}] [{resolved_level}] {message}"
         self.record_diagnostic_log(resolved_level, message, ts=time.strftime("%Y-%m-%d %H:%M:%S"))
+
+        if frontend is None:
+            frontend = self.should_show_frontend_log(message, resolved_level)
+        if not frontend:
+            return
 
         def write_ui():
             try:
@@ -1097,6 +1499,16 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                     self._log_line_count = keep_lines
                 self.log_box.see("end")
                 self.log_box.configure(state="disabled")
+                compact_log = getattr(self, "compact_log_box", None)
+                if compact_log is not None:
+                    compact_log.configure(state="normal")
+                    compact_log.insert("end", full_msg + "\n")
+                    self._compact_log_line_count = getattr(self, "_compact_log_line_count", 0) + 1
+                    if self._compact_log_line_count > 400:
+                        compact_log.delete("1.0", "end-251lines")
+                        self._compact_log_line_count = 250
+                    compact_log.see("end")
+                    compact_log.configure(state="disabled")
             except Exception:
                 pass
         self.ui_call(write_ui)
@@ -1109,8 +1521,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                     self.lbl_log_title.configure(text="运行日志")
                 if hasattr(self, "btn_toggle_log"):
                     self.btn_toggle_log.configure(text="收起日志")
-                self.minsize(1180, 700)
-                self.geometry(f"{self.winfo_width()}x{getattr(self, 'expanded_window_height', 760)}")
+                self.minsize(1040, 700)
+                self.geometry(f"{self.winfo_width()}x{getattr(self, 'expanded_window_height', 800)}")
                 self.is_log_collapsed = False
             else:
                 self.expanded_window_height = self.winfo_height()
@@ -1119,8 +1531,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                     self.lbl_log_title.configure(text="日志已收起")
                 if hasattr(self, "btn_toggle_log"):
                     self.btn_toggle_log.configure(text="展开日志")
-                self.minsize(1180, 510)
-                self.geometry(f"{self.winfo_width()}x510")
+                self.minsize(1040, 650)
+                self.geometry(f"{self.winfo_width()}x650")
                 self.is_log_collapsed = True
         except Exception:
             pass
@@ -1148,7 +1560,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             self.yolo_car_select_model_path = None
             self.ai_model_preload_started = False
         self.save_config()
-        self.log("AI assist enabled." if enabled else "AI assist disabled.")
+        self.log(f"[模式] AI辅助{'已开启' if enabled else '已关闭'}")
         if enabled:
             self.preload_ai_model_async()
 
@@ -1158,7 +1570,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         if not enabled:
             self.memory_car_page = 0
         self.save_config()
-        self.log("Smart page enabled." if enabled else "Smart page disabled.")
+        self.log(f"[模式] 智能页码{'已开启' if enabled else '已关闭'}")
 
     def on_ai_only_changed(self):
         enabled = bool(self.var_ai_only.get())
@@ -1168,13 +1580,13 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             self.config["ai_assist"] = True
             self.config["ai_prefer"] = True
         self.save_config()
-        self.log("AI only enabled." if enabled else "AI only disabled.")
+        self.log(f"[模式] 纯AI{'已开启' if enabled else '已关闭'}")
 
     def on_ai_auto_capture_changed(self):
         enabled = bool(self.var_ai_auto_capture.get())
         self.config["ai_auto_capture"] = enabled
         self.save_config()
-        self.log("AI auto capture enabled." if enabled else "AI auto capture disabled.")
+        self.log(f"[模式] AI自动截图{'已开启' if enabled else '已关闭'}")
 
     def on_diagnostic_mode_changed(self):
         enabled = bool(getattr(self, "var_diagnostic_mode", None).get())
@@ -1183,7 +1595,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.log("诊断记录已开启。" if enabled else "诊断记录已关闭。")
 
     def on_buy_cj_vehicle_changed(self, selected):
-        mode = "mazda" if "马自达" in str(selected or "") else "subaru"
+        mode = self.resolve_buy_cj_vehicle_mode(selected)
         previous_mode = str(self.config.get("buy_cj_vehicle", "subaru")).lower()
         if previous_mode in DEFAULT_SKILL_DIRS_BY_VEHICLE:
             self.sync_current_skill_dirs_for_vehicle(previous_mode)
@@ -1213,9 +1625,18 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                 return active_mode
         if hasattr(self, "var_buy_cj_vehicle"):
             selected = str(self.var_buy_cj_vehicle.get() or "")
-            return "mazda" if "马自达" in selected else "subaru"
+            return self.resolve_buy_cj_vehicle_mode(selected)
         selected = str(self.config.get("buy_cj_vehicle", "subaru")).lower()
         return selected if selected in ("subaru", "mazda") else "subaru"
+
+    def resolve_buy_cj_vehicle_mode(self, selected):
+        selected_text = str(selected or "")
+        labels = getattr(self, "_buy_cj_vehicle_labels", {}) or {}
+        if selected_text == str(labels.get("mazda", "马自达")):
+            return "mazda"
+        if selected_text == str(labels.get("subaru", "斯巴鲁 22B")):
+            return "subaru"
+        return "mazda" if "马自达" in selected_text else "subaru"
 
     def get_buy_cj_vehicle_price(self, mode=None):
         mode = mode or self.get_buy_cj_vehicle_mode()
@@ -1484,6 +1905,48 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         return flow_save_template_car_debug(self, screen_bgr, status, reason=reason, boxes=boxes, scores=scores, click=click, force=force)
     def cleanup_recent_template_car_miss(self, root, keep_seconds=12.0):
         return flow_cleanup_recent_template_car_miss(self, root, keep_seconds=keep_seconds)
+
+    def start_delete_test(self):
+        """Start the Mazda-only deletion flow outside the main loop."""
+        if self.is_running:
+            self.log("[流程] 已有任务正在运行，请停止后再启动删除车辆任务。")
+            return
+
+        try:
+            target_count = max(1, int(self.entry_delete.get()))
+        except Exception:
+            target_count = max(1, int(self.config.get("delete_count", 30) or 30))
+            self.entry_delete.delete(0, "end")
+            self.entry_delete.insert(0, str(target_count))
+
+        self.is_running = True
+        self.save_config()
+        self.reset_run_stats()
+        self.delete_counter = 0
+        self.update_running_state("running")
+        self.update_delete_progress(0, target_count)
+        self.update_timer()
+        self.start_diagnostic_trace_session("delete:standalone")
+        self.log(f"[流程] 开始删除车辆任务，目标数量 {target_count}（仅 Mazda）")
+
+        def runner():
+            success = False
+            try:
+                if self.check_and_focus_game():
+                    success = bool(self.logic_delete_car(target_count))
+            except Exception as e:
+                self.log(f"执行删除车辆模块时异常: {e}", level="ERROR", frontend=True)
+
+            if success:
+                self.log(f"[流程] 删除车辆任务结束，完成 {self.delete_counter}/{target_count}")
+            elif self.is_running:
+                self.log("[流程] 删除车辆任务尚未完成。")
+            if self.is_running:
+                self.stop_all()
+
+        self.current_thread = threading.Thread(target=runner, daemon=True)
+        self.current_thread.start()
+
     def start_pipeline(self, start_step):
         if self.is_running:
             return
@@ -1520,6 +1983,9 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.stop_after_cj_due_buy_limit = False
         self.active_buy_cj_vehicle = self.get_buy_cj_vehicle_mode(prefer_active=False)
         self.active_buy_vehicle_price = self.get_buy_cj_vehicle_price(self.active_buy_cj_vehicle)
+        vehicle_name = "马自达 808" if self.active_buy_cj_vehicle == "mazda" else "斯巴鲁 22B"
+        ai_state = "已开启" if self.config.get("ai_assist", False) else "未开启"
+        self.log(f"[模式] 本次任务车辆：{vehicle_name}；AI 选车：{ai_state}")
         try:
             cr_amount = max(0, int(getattr(self, "entry_cr_amount", None).get() or 0))
         except Exception:
@@ -1540,7 +2006,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                 self.stop_all()
                 return
 
-            steps = ["race", "buy", "cj"]
+            steps = ["race", "buy", "cj", "delete"]
             curr_idx = steps.index(start_step)
 
             try:
@@ -1549,6 +2015,9 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                 total_loops = self.config.get("global_loops", 10)
             self.global_loop_current = 1
             self.ui_call(self.lbl_runtime_loop.configure, text=f"{self.global_loop_current} / {total_loops}")
+            if hasattr(self, "lbl_compact_loop"):
+                self.ui_call(self.lbl_compact_loop.configure, text=f"{self.global_loop_current} / {total_loops}")
+            self.log(f"[大循环] 开始 1/{total_loops}")
 
             # 【新增】：全局连续失败计数器
             continuous_failures = 0
@@ -1557,7 +2026,16 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
 
             while self.is_running:
                 step_name = steps[curr_idx]
+                step_label = {
+                    "race": "循环跑图",
+                    "buy": "批量买车",
+                    "cj": "超级抽奖",
+                    "delete": "删除车辆",
+                }[step_name]
                 success = False
+                self.log(
+                    f"[流程] 开始 {step_label}（大循环 {self.global_loop_current}/{total_loops}）"
+                )
 
                 try:
                     if step_name == "race":
@@ -1566,6 +2044,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                         success = self.logic_buy_car(int(self.entry_car.get()))
                     elif step_name == "cj":
                         success = self.logic_super_wheelspin(int(self.entry_cj.get()))
+                    elif step_name == "delete":
+                        success = self.logic_delete_car(int(self.entry_delete.get()))
                 except Exception as e:
                     self.log(f"执行模块 {step_name} 时异常: {e}")
                     success = False
@@ -1574,6 +2054,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                     break
 
                 if getattr(self, "invalid_blueprint_abort", False):
+                    self.log("[流程] 循环跑图已停止：当前挑战分享码不可用")
                     break
 
                 if not success:
@@ -1581,6 +2062,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                         break
 
                     continuous_failures += 1
+                    self.log(
+                        f"[流程] {step_label}未完成，准备恢复后重试 "
+                        f"({continuous_failures}/{MAX_RECOVERIES})"
+                    )
 
                     # 检查是否超过最大容忍次数
                     if continuous_failures > MAX_RECOVERIES:
@@ -1598,28 +2083,22 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                 else:
                     # 只要这一个大步骤成功跑完了，就把连续失败次数清零，奖励它继续跑！
                     continuous_failures = 0
+                    completed = {
+                        "race": self.race_counter,
+                        "buy": self.car_counter,
+                        "cj": self.cj_counter,
+                        "delete": self.delete_counter,
+                    }[step_name]
+                    self.log(f"[流程] {step_label}结束，本轮完成 {completed} 次")
 
                 if step_name == "cj" and getattr(self, "stop_after_cj_due_buy_limit", False):
                     self.log("CR 买车上限已触发，本轮超抽完成后停止整个循环，避免浪费新车。")
                     break
                 #v1.0.1
                 # ====== 核心流转与无限循环逻辑 ======
-                next_idx = curr_idx + 1 # 默认前往下一步
-                if curr_idx == 0:
-                    if self.var_chk1.get():
-                        try: next_idx = max(0, min(3, int(self.entry_next1.get()) - 1))
-                        except Exception: next_idx = 1
-                    else: break
-                elif curr_idx == 1:
-                    if self.var_chk2.get():
-                        try: next_idx = max(0, min(3, int(self.entry_next2.get()) - 1))
-                        except Exception: next_idx = 2
-                    else: break
-                elif curr_idx == 2:
-                    if self.var_chk3.get():
-                        try: next_idx = max(0, min(2, int(self.entry_next3.get()) - 1))
-                        except Exception: next_idx = 0
-                    else: break
+                next_idx = self.resolve_pipeline_next_index(curr_idx)
+                if next_idx is None:
+                    break
 
                 if step_name == "buy" and getattr(self, "stop_after_cj_due_buy_limit", False):
                     next_idx = 2
@@ -1628,16 +2107,21 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                     self.global_loop_current += 1
 
                     if self.global_loop_current > total_loops:
+                        self.log(f"[大循环] 已完成 {total_loops}/{total_loops}")
                         self.log("达到设定的总循环次数，任务圆满结束。")
                         break
 
-                    self.log(f"开启新一轮大循环 ({self.global_loop_current}/{total_loops})")
+                    self.log(f"[大循环] 已完成 {self.global_loop_current - 1}/{total_loops}")
+                    self.log(f"[大循环] 开始 {self.global_loop_current}/{total_loops}")
 
                     self.ui_call(self.lbl_runtime_loop.configure, text=f"{self.global_loop_current} / {total_loops}")
+                    if hasattr(self, "lbl_compact_loop"):
+                        self.ui_call(self.lbl_compact_loop.configure, text=f"{self.global_loop_current} / {total_loops}")
 
                     self.race_counter = 0
                     self.car_counter = 0
                     self.cj_counter = 0
+                    self.delete_counter = 0
 
                 curr_idx = next_idx
 
@@ -1659,10 +2143,11 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         for key in ["w", "e", "y", "enter", "esc", "up", "down", "left", "right", "space", "backspace"]:
             self.hw_key_up(key)
 
-        try:
-            pydirectinput.mouseUp()
-        except Exception:
-            pass
+        if not self.is_background_mouse_enabled():
+            try:
+                pydirectinput.mouseUp()
+            except Exception:
+                pass
 
         self.finalize_active_task_time()
         self.finish_diagnostic_trace_session()
@@ -1715,10 +2200,11 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             # 强制松开所有可能按住的按键，防止车自己开走或UI乱跳
             for key in ["w", "e", "y", "enter", "esc", "up", "down", "left", "right", "space", "backspace"]:
                 self.hw_key_up(key)
-            try:
-                pydirectinput.mouseUp()
-            except Exception:
-                pass
+            if not self.is_background_mouse_enabled():
+                try:
+                    pydirectinput.mouseUp()
+                except Exception:
+                    pass
             self.ui_call(self.update_running_state, "paused")
         else:
             self.log("▶ 任务已恢复")
@@ -1732,15 +2218,30 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
 
     def start_hotkey_listener(self):
         if keyboard is None:
-            self.log("未检测到 pynput，已跳过 F8/F3 全局热键监听，可继续使用界面按钮操作。")
+            self.log("未检测到 pynput，已跳过 F8/F9 全局热键监听，可继续使用界面按钮操作。")
             return
 
         def hotkey_thread():
+            last_f9_time = 0.0
+
             def on_press(k):
-                if k == keyboard.Key.f8:
-                    self.stop_all()
-                elif k == keyboard.Key.f3:  # <--- 【新增】F3 测试找图
-                    self.start_test_find_image()
+                nonlocal last_f9_time
+                try:
+                    if k == keyboard.Key.f8:
+                        self.stop_all()
+                    elif k == keyboard.Key.f9:
+                        now = time.monotonic()
+                        if now - last_f9_time >= 0.5:
+                            last_f9_time = now
+                            self._developer_f9_last_time = now
+                            self.ui_call(open_developer_text_editor, self)
+                except Exception as exc:
+                    self.ui_call(
+                        self.log,
+                        f"全局快捷键处理异常：{exc}",
+                        level="ERROR",
+                        frontend=True,
+                    )
 
             with keyboard.Listener(on_press=on_press) as listener:
                 listener.join()
@@ -1768,15 +2269,17 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             self.log("已自动切换英文键盘/关闭中文输入法状态。")
         except Exception as e:
             self.log(f"自动防中文输入设置失败: {e}")
-    def check_and_focus_game(self):
-        self.log("检查游戏进程 (forzahorizon6.exe)...")
+    def check_and_focus_game(self, focus_game=True, quiet=False, calibrate=True):
+        if not quiet:
+            self.log("检查游戏进程 (forzahorizon6.exe)...")
         try:
             CREATE_NO_WINDOW = 0x08000000
             cmd = 'tasklist /FI "IMAGENAME eq forzahorizon6.exe" /NH /FO CSV'
             output = subprocess.check_output(cmd, shell=True, text=True, creationflags=CREATE_NO_WINDOW)
 
             if "forzahorizon6.exe" not in output.lower():
-                self.log("未发现 forzahorizon6.exe 进程！(请确保游戏已运行)")
+                if not quiet:
+                    self.log("未发现 forzahorizon6.exe 进程！(请确保游戏已运行)")
                 return False
 
             target_pid = None
@@ -1787,7 +2290,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                     break
 
             if not target_pid:
-                self.log("找到进程但无法解析PID！")
+                if not quiet:
+                    self.log("找到进程但无法解析PID！")
                 return False
 
             hwnds = []
@@ -1806,17 +2310,27 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             ctypes.windll.user32.EnumWindows(EnumWindowsProc(foreach_window), 0)
 
             if hwnds:
-                hwnd = hwnds[0]
-                if ctypes.windll.user32.IsIconic(hwnd):
-                    ctypes.windll.user32.ShowWindow(hwnd, 9)
-                else:
-                    ctypes.windll.user32.ShowWindow(hwnd, 5)
+                titled_hwnds = []
+                for candidate in hwnds:
+                    title_length = ctypes.windll.user32.GetWindowTextLengthW(candidate)
+                    title_buffer = ctypes.create_unicode_buffer(title_length + 1)
+                    ctypes.windll.user32.GetWindowTextW(candidate, title_buffer, title_length + 1)
+                    titled_hwnds.append((candidate, title_buffer.value.strip()))
+                preferred = [item for item in titled_hwnds if item[1] == "Forza Horizon 6"]
+                if not preferred:
+                    preferred = [item for item in titled_hwnds if "Forza Horizon 6" in item[1]]
+                hwnd = (preferred or titled_hwnds)[0][0]
+                if focus_game:
+                    if ctypes.windll.user32.IsIconic(hwnd):
+                        ctypes.windll.user32.ShowWindow(hwnd, 9)
+                    else:
+                        ctypes.windll.user32.ShowWindow(hwnd, 5)
 
-                ctypes.windll.user32.SetForegroundWindow(hwnd)
-                time.sleep(0.5)
-                # ====== 【新增】：强制关闭中文输入法 ======
-                self.set_english_input()
-                # ==========================================
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    time.sleep(0.5)
+                    # ====== 【新增】：强制关闭中文输入法 ======
+                    self.set_english_input()
+                    # ==========================================
                 try:
                     # 1. 更新识图区域为游戏实际窗口区域（识图必须在游戏窗口内）
                     client_rect = win32gui.GetClientRect(hwnd)
@@ -1830,7 +2344,45 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                         return False
                     # ====================================================
                     self.update_regions_by_window(gx, gy, gw, gh)
-                    self.calibrate_match_profile()
+                    with self._background_attach_lock:
+                        self.game_hwnd = hwnd
+                        mouse = getattr(self, "background_mouse", None)
+                        if mouse is None or mouse.hwnd != int(hwnd) or not mouse.is_valid():
+                            self.background_mouse = WindowMouseManager(hwnd)
+
+                        capture = getattr(self, "background_capture", None)
+                        if capture is None or capture.hwnd != int(hwnd) or not capture.is_valid():
+                            self.background_capture = WindowCaptureManager(hwnd)
+
+                        keyboard_manager = getattr(self, "background_keyboard", None)
+                        if (
+                            keyboard_manager is None
+                            or keyboard_manager.hwnd != int(hwnd)
+                            or not keyboard_manager.is_valid()
+                        ):
+                            if keyboard_manager is not None:
+                                keyboard_manager.stop()
+                            keyboard_manager = WindowKeyboardManager(hwnd)
+                            keyboard_manager.start()
+                            self.background_keyboard = keyboard_manager
+                        elif not getattr(keyboard_manager, "_running", False):
+                            keyboard_manager.start()
+
+                    if not quiet:
+                        mouse_state = "后台" if self.is_background_mouse_enabled() else "物理"
+                        capture_state = "后台" if self.config.get("background_capture_enabled", True) else "桌面"
+                        keyboard_state = "后台" if self.config.get("background_keyboard_enabled", True) else "物理"
+                        self.log(
+                            f"[模式] 游戏窗口已连接（{gw}×{gh}；"
+                            f"鼠标={mouse_state}，识图={capture_state}，键盘={keyboard_state}）"
+                        )
+                    if calibrate:
+                        self.calibrate_match_profile()
+                    # SetForegroundWindow(game) is needed for initial hookup, but
+                    # it also leaves the compact UI behind the game.  Raise the UI
+                    # once as a normal window; do not keep it topmost.
+                    if focus_game and self.is_compact_on_run_enabled():
+                        self.ui_call(self.restore_compact_window_normal_layer)
 
                     # 2. 获取该窗口所在的物理显示器边界
                     MONITOR_DEFAULTTONEAREST = 2
@@ -1864,11 +2416,13 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                 except Exception as e:
                     self.log(f"获取窗口坐标失败: {e}")
 
-                time.sleep(1.0)
+                if focus_game:
+                    time.sleep(1.0)
                 return True
 
         except Exception as e:
-            self.log(f"检查进程异常: {e}")
+            if not quiet:
+                self.log(f"检查进程异常: {e}")
             return False
 
         return False
@@ -2159,6 +2713,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         return flow_handle_author_prompt(self, release_drive_keys=release_drive_keys)
     def logic_buy_car(self, target_count):
         return flow_logic_buy_car(self, target_count)
+    def logic_delete_car(self, target_count):
+        return flow_logic_delete_car(self, target_count)
     def enter_design_paint_choose_car(self):
         return flow_enter_design_paint_choose_car(self)
     def select_new_consumable_car_from_list(self):
