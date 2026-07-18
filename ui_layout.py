@@ -91,6 +91,12 @@ def setup_ui(bot):
     bot.var_ai_only = ctk.BooleanVar(value=bot.config.get("ai_only", False))
     bot.var_ai_auto_capture = ctk.BooleanVar(value=bot.config.get("ai_auto_capture", False))
     bot.var_diagnostic_mode = ctk.BooleanVar(value=bot.config.get("diagnostic_mode", False))
+    configured_buy_cj_vehicle = str(bot.config.get("buy_cj_vehicle", "subaru")).lower()
+    buy_cj_vehicle_label = "马自达" if configured_buy_cj_vehicle == "mazda" else "斯巴鲁"
+    configured_prices = bot.config.get("buy_cj_vehicle_prices", {})
+    default_vehicle_prices = {"subaru": 330000, "mazda": 95000}
+    selected_vehicle_price = int(configured_prices.get(configured_buy_cj_vehicle, default_vehicle_prices.get(configured_buy_cj_vehicle, 330000))) if isinstance(configured_prices, dict) else default_vehicle_prices.get(configured_buy_cj_vehicle, 330000)
+    bot.var_buy_cj_vehicle = ctk.StringVar(value=buy_cj_vehicle_label)
     bot.var_auto_restart = ctk.BooleanVar(value=False)
 
     bot.main_container = ctk.CTkFrame(bot, fg_color="transparent")
@@ -278,6 +284,34 @@ def setup_ui(bot):
     bot.chk1 = bot.var_chk1
     bot.chk2 = bot.var_chk2
     bot.chk3 = bot.var_chk3
+
+    vehicle_selector = ctk.CTkFrame(bot.side_panel, fg_color="transparent")
+    vehicle_selector.pack(fill="x", padx=14, pady=(2, 0))
+    label(vehicle_selector, "专精车辆", color=colors["muted"], font=font_small).pack(anchor="w", pady=(0, 5))
+    bot.seg_buy_cj_vehicle = ctk.CTkSegmentedButton(
+        vehicle_selector,
+        values=["斯巴鲁 22B", "马自达"],
+        variable=bot.var_buy_cj_vehicle,
+        command=bot.on_buy_cj_vehicle_changed,
+        height=30,
+        corner_radius=7,
+        fg_color=colors["panel_2"],
+        selected_color=colors["green"],
+        selected_hover_color=colors["green_hover"],
+        unselected_color=colors["button"],
+        unselected_hover_color=colors["button_hover"],
+        text_color=colors["text"],
+        font=font_small,
+    )
+    bot.seg_buy_cj_vehicle.pack(fill="x")
+    price_suffix = " · 需要通行证" if configured_buy_cj_vehicle == "mazda" else ""
+    bot.lbl_buy_cj_vehicle_price = label(
+        vehicle_selector,
+        f"单价 {selected_vehicle_price:,} CR{price_suffix}",
+        color=colors["muted_2"],
+        font=ctk.CTkFont(family=ui_font, size=11),
+    )
+    bot.lbl_buy_cj_vehicle_price.pack(anchor="w", pady=(4, 0))
 
     bot.global_settings_frame = card(bot.main_container, height=52, fg_color="#111112")
     bot.global_settings_frame.pack(fill="x", pady=(12, 0))

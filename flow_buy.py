@@ -4,7 +4,29 @@ from flow_common import click_if_found, press_with_pause, wait_image_or_log
 from recognition_config import get_recognition_profile
 
 
+BUY_VEHICLE_PROFILES = {
+    "subaru": {
+        "name": "斯巴鲁 22B",
+        "brand_template": "CCbrand.png",
+        "car_template": "consumablecar.png",
+    },
+    "mazda": {
+        "name": "马自达 #123 Mad Mike 808 Wagon",
+        "brand_template": "CCbrand_Mazda.png",
+        "car_template": "consumablecar_Mazda.png",
+    },
+}
+
+
 def logic_buy_car(self, target_count):
+    vehicle_mode = self.get_buy_cj_vehicle_mode()
+    vehicle_profile = BUY_VEHICLE_PROFILES.get(vehicle_mode, BUY_VEHICLE_PROFILES["subaru"])
+    vehicle_name = vehicle_profile["name"]
+    brand_template = vehicle_profile["brand_template"]
+    car_template = vehicle_profile["car_template"]
+    unit_price = self.get_buy_cj_vehicle_price(vehicle_mode)
+    self.log(f"[BuyVehicle] 当前方案：{vehicle_name}，单价 {unit_price:,} CR")
+
     total_limit = getattr(self, "total_car_limit", None)
     total_bought = int(getattr(self, "total_car_bought", 0) or 0)
     if total_limit is not None:
@@ -89,7 +111,7 @@ def logic_buy_car(self, target_count):
             return False
 
         brand_pos = self.wait_for_any_image_gray(
-            ["CCbrand.png"],
+            [brand_template],
             region=self.regions["全界面"],
             threshold=profile["threshold"],
             timeout=profile["timeout"],
@@ -102,28 +124,30 @@ def logic_buy_car(self, target_count):
         press_with_pause(self, "up", after=0.25)
 
     if not brand_pos:
-        self.log("未找到品牌")
+        self.log(f"未找到目标品牌：{vehicle_name}")
         return False
 
     click_if_found(self, brand_pos, post_delay=0.8)
     press_with_pause(self, "down", after=0.4)
 
     profile = get_recognition_profile(self, "buy.consumablecar")
-    pos_22b = wait_image_or_log(
+    pos_target_car = wait_image_or_log(
         self,
-        "consumablecar.png",
+        car_template,
         region=self.regions["全界面"],
         threshold=profile["threshold"],
         timeout=profile["timeout"],
         interval=profile["interval"],
         fast_mode=profile["fast_mode"],
-        not_found_message="未找到消耗品车辆",
+        not_found_message=f"未找到目标购买车辆：{vehicle_name}",
         click=True,
         click_double=True,
         post_delay=1.0,
     )
-    if not pos_22b:
+    if not pos_target_car:
         return False
+
+    self.log(f"已锁定目标购买车辆：{vehicle_name}")
 
     while self.car_counter < target_count:
         if not self.is_running:

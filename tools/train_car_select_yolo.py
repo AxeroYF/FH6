@@ -20,6 +20,9 @@ def main():
     data_path = Path(args.data)
     if not data_path.exists():
         raise FileNotFoundError(f"Dataset yaml not found: {data_path}")
+    project_path = Path(args.project)
+    if not project_path.is_absolute():
+        project_path = Path.cwd() / project_path
 
     model = YOLO(args.model)
     model.train(
@@ -28,7 +31,9 @@ def main():
         imgsz=args.imgsz,
         batch=args.batch,
         device=args.device,
-        project=args.project,
+        # Resolve explicitly so stale Ultralytics user settings cannot redirect
+        # runs back to an old checkout path.
+        project=str(project_path.resolve()),
         name=args.name,
         workers=args.workers,
         patience=25,

@@ -7,17 +7,39 @@ import numpy as np
 from recognition_config import get_recognition_profile
 from app_resources import get_app_dir
 
+
+CJ_VEHICLE_PROFILES = {
+    "subaru": {
+        "name": "斯巴鲁 22B",
+        "brand_template": "CCbrand.png",
+    },
+    "mazda": {
+        "name": "马自达 #123 Mad Mike 808 Wagon",
+        "brand_template": "CCbrand_Mazda.png",
+    },
+}
+
 def resolve_ai_model_path(self):
     candidates = []
-    configured = str(self.config.get("ai_model_path", "")).strip()
-    if configured:
-        candidates.append(configured)
-    candidates.extend([
-        "models/fh6_car_select_yolo.pt",
-        "runs/detect/fh6_car_select/yolo11n_all_boxes_v2/weights/best.pt",
-        "runs/detect/fh6_car_select/yolo11n_all_boxes/weights/best.pt",
-        "runs/detect/runs/fh6_car_select/yolo11n_draft/weights/best.pt",
-    ])
+    vehicle_mode = self.get_buy_cj_vehicle_mode()
+    configured_paths = self.config.get("ai_model_paths", {})
+    if isinstance(configured_paths, dict):
+        configured_vehicle_path = str(configured_paths.get(vehicle_mode, "")).strip()
+        if configured_vehicle_path:
+            candidates.append(configured_vehicle_path)
+
+    if vehicle_mode == "mazda":
+        candidates.append("models/fh6_car_select_mazda_yolo.pt")
+    else:
+        configured = str(self.config.get("ai_model_path", "")).strip()
+        if configured:
+            candidates.append(configured)
+        candidates.extend([
+            "models/fh6_car_select_yolo.pt",
+            "runs/detect/fh6_car_select/yolo11n_all_boxes_v2/weights/best.pt",
+            "runs/detect/fh6_car_select/yolo11n_all_boxes/weights/best.pt",
+            "runs/detect/runs/fh6_car_select/yolo11n_draft/weights/best.pt",
+        ])
     seen = set()
     for item in candidates:
         if not item or item in seen:
@@ -33,7 +55,9 @@ def get_yolo_car_select_model(self):
         return None
     model_path = self.resolve_ai_model_path()
     if not model_path:
-        self.log("[AISelect] model not found. Put best.pt at models/fh6_car_select_yolo.pt or update config.json ai_model_path.")
+        vehicle_mode = self.get_buy_cj_vehicle_mode()
+        expected = "models/fh6_car_select_mazda_yolo.pt" if vehicle_mode == "mazda" else "models/fh6_car_select_yolo.pt"
+        self.log(f"[AISelect] {vehicle_mode} model not found. Put best.pt at {expected} or update config.json ai_model_paths.")
         return None
     with self.yolo_car_select_model_lock:
         if self.yolo_car_select_model is not None and self.yolo_car_select_model_path == model_path:
@@ -182,7 +206,9 @@ def save_ai_car_debug(self, screen_bgr, status, boxes=None, candidate=None, reas
         self.ai_car_debug_seq += 1
         stamp = time.strftime("%Y%m%d_%H%M%S")
         name = f"{stamp}_{self.ai_car_debug_seq:04d}_{status}"
-        root = os.path.join(get_app_dir(), "debug", "car_select_ai")
+        vehicle_mode = self.get_buy_cj_vehicle_mode()
+        debug_name = "car_select_ai_mazda" if vehicle_mode == "mazda" else "car_select_ai"
+        root = os.path.join(get_app_dir(), "debug", debug_name)
         raw_path = os.path.join(root, "raw", f"{name}.png")
         self.write_debug_image(raw_path, screen_bgr)
 
@@ -306,7 +332,9 @@ def save_template_car_debug(self, screen_bgr, status, reason="", boxes=None, sco
         self.strict_car_debug_seq += 1
         stamp = time.strftime("%Y%m%d_%H%M%S")
         name = f"{stamp}_{self.strict_car_debug_seq:04d}_{status}"
-        root = os.path.join(get_app_dir(), "debug", "car_select")
+        vehicle_mode = self.get_buy_cj_vehicle_mode()
+        debug_name = "car_select_mazda" if vehicle_mode == "mazda" else "car_select"
+        root = os.path.join(get_app_dir(), "debug", debug_name)
         if status == "pass":
             self.cleanup_recent_template_car_miss(root, keep_seconds=12.0)
 
@@ -444,6 +472,12 @@ def enter_design_paint_choose_car(self):
     return True
 
 def select_new_consumable_car_from_list(self):
+    vehicle_mode = self.get_buy_cj_vehicle_mode()
+    vehicle_profile = CJ_VEHICLE_PROFILES.get(vehicle_mode, CJ_VEHICLE_PROFILES["subaru"])
+    vehicle_name = vehicle_profile["name"]
+    brand_template = vehicle_profile["brand_template"]
+    self.log(f"[CJ] 当前选车方案：{vehicle_name}")
+
     self.hw_press("backspace")
     time.sleep(1.0)
 
@@ -454,7 +488,7 @@ def select_new_consumable_car_from_list(self):
             return False
 
         brand_pos = self.wait_for_any_image_gray(
-            ["CCbrand.png"],
+            [brand_template],
             region=self.regions["全界面"],
             threshold=profile["threshold"],
             timeout=profile["timeout"],
@@ -468,7 +502,7 @@ def select_new_consumable_car_from_list(self):
         time.sleep(0.25)
 
     if not brand_pos:
-        self.log("选品牌失败")
+        self.log(f"选品牌失败：未找到 {vehicle_name}")
         return False
 
     self.game_click(brand_pos)
@@ -523,6 +557,10 @@ def select_new_consumable_car_from_list(self):
 def logic_super_wheelspin(self, target_count):
     if self.cj_counter >= target_count:
         return True
+
+    # 固定本轮 CJ 使用的车辆方案，确保选车、YOLO 模型和技能树路径一致。
+    # get_buy_cj_vehicle_mode 会优先读取流程启动时锁定的 active_buy_cj_vehicle。
+    vehicle_mode = self.get_buy_cj_vehicle_mode()
 
     self.update_running_ui("超级抽奖", self.cj_counter, target_count)
     # 【新增】：初始化记忆页码
@@ -726,17 +764,19 @@ def logic_super_wheelspin(self, target_count):
             time.sleep(1.0)
 
             spne_found = None
-            for dk in self.config["skill_dirs"]:
+            for dk in self.get_skill_dirs_for_vehicle(vehicle_mode):
                 if not self.is_running:
                     return False
                 self.hw_press(dk)
                 time.sleep(0.12)
                 self.hw_press("enter")
-                time.sleep(0.5)
+                # 技能购买提示出现得很快；只留短暂的 UI 响应时间，随后在
+                # 中央区域快速检查“技能点不足”，避免每个节点都做慢速全屏轮询。
+                time.sleep(0.18)
                 profile = get_recognition_profile(self, "cj.spne")
                 spne_found = self.wait_for_image_gray(
                     "SPNE.png",
-                    region=self.regions["全界面"],
+                    region=self.regions["中间"],
                     threshold=profile["threshold"],
                     timeout=profile["timeout"],
                     interval=profile["interval"],

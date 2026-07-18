@@ -52,7 +52,10 @@ import cv2
 import numpy as np
 import pyautogui
 import pydirectinput
-from pynput import keyboard
+try:
+    from pynput import keyboard
+except Exception:
+    keyboard = None
 import win32gui
 import threading
 
@@ -229,6 +232,16 @@ DIK_CODES = {
     "f12": (0x58, False),
 }
 
+DEFAULT_BUY_CJ_VEHICLE_PRICES = {
+    "subaru": 330000,
+    "mazda": 95000,
+}
+
+DEFAULT_SKILL_DIRS_BY_VEHICLE = {
+    "subaru": ["right", "up", "up", "up", "left"],
+    "mazda": ["right", "right", "up", "up", "up"],
+}
+
 # --- 全局配置 ---
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -318,7 +331,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.preload_ai_model_async()
 
         self.log("免责声明：本脚本仅供 Python 自动化技术交流与学习使用。请勿用于商业盈利或破坏游戏平衡，因使用本脚本造成的账号封禁等损失，由使用者自行承担。")
-        self.log("默认刷图车辆：【斯巴鲁Impreza 22B-STi Version】【调校S2-834】【保持默认涂装】【收藏车辆】")
+        self.log("默认刷图车辆：【1998 斯巴鲁】【调校R-917】【保持截图对应涂装】【收藏车辆】")
         self.log("蓝图代码可自行修改,工具运行目录不要有中文。")
         self.log("游戏设置为【自动转向】【手动挡】，游戏语言设置为【简体中文】")
         self.log("大部分以图像识别作为引导，减少机器盲目操作的风险，但仍无法完全避免，使用前请做好准备。")
@@ -626,12 +639,19 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             "next_2": 3,
             "next_3": 1,
             "global_loops": 10,
-            "skill_dirs": ["right", "up", "up", "up", "left"],
-            "share_code": "890169683",
+            "skill_dirs": list(DEFAULT_SKILL_DIRS_BY_VEHICLE["subaru"]),
+            "skill_dirs_by_vehicle": {
+                key: list(value) for key, value in DEFAULT_SKILL_DIRS_BY_VEHICLE.items()
+            },
+            "skillcar_templates": ["skillcar_r917.png"],
+            "buy_cj_vehicle": "subaru",
+            "buy_cj_vehicle_prices": dict(DEFAULT_BUY_CJ_VEHICLE_PRICES),
+            "share_code": "103435586",
             "cr_amount": 0,
             "auto_restart": False,
             "restart_cmd": "start steam://run/2483190",
             "race_timeout": 300,
+            "challenge_load_seconds": 15,
             "ai_assist": False,
             "ai_prefer": False,
             "ai_only": False,
@@ -639,10 +659,15 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             "diagnostic_mode": False,
             "recognition_profiles": {},
             "smart_page": False,
-            "ai_model_path": "models/fh6_car_select_yolo.pt"
+            "ai_model_path": "models/fh6_car_select_yolo.pt",
+            "ai_model_paths": {
+                "subaru": "models/fh6_car_select_yolo.pt",
+                "mazda": "models/fh6_car_select_mazda_yolo.pt"
+            }
         }
         ext_path = USER_CONFIG_FILE
         # 2. 读取用户的 config.json，并与底本合并（自动补全缺失项）
+        user_config = {}
         if os.path.exists(ext_path):
             try:
                 with open(ext_path, "r", encoding="utf-8") as f:
@@ -651,6 +676,54 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             except Exception as e:
                 self.log(f"用户 config.json 损坏，已自动恢复默认配置。")
         self.config["ai_prefer"] = bool(self.config.get("ai_assist", False))
+        selected_vehicle = str(self.config.get("buy_cj_vehicle", "subaru")).lower()
+        self.config["buy_cj_vehicle"] = selected_vehicle if selected_vehicle in ("subaru", "mazda") else "subaru"
+        selected_vehicle = self.config["buy_cj_vehicle"]
+        configured_skill_dirs = user_config.get("skill_dirs_by_vehicle")
+        normalized_skill_dirs = {
+            key: list(value) for key, value in DEFAULT_SKILL_DIRS_BY_VEHICLE.items()
+        }
+        if isinstance(configured_skill_dirs, dict):
+            for vehicle_key in normalized_skill_dirs:
+                vehicle_dirs = configured_skill_dirs.get(vehicle_key)
+                if isinstance(vehicle_dirs, list):
+                    normalized_skill_dirs[vehicle_key] = [
+                        direction for direction in vehicle_dirs
+                        if direction in ("up", "down", "left", "right")
+                    ]
+        else:
+            # 兼容旧配置：把原来的单一路径保留给当时选中的车辆，
+            # 另一个车辆使用各自的新默认路径。
+            legacy_dirs = self.config.get("skill_dirs")
+            if isinstance(legacy_dirs, list):
+                normalized_skill_dirs[selected_vehicle] = [
+                    direction for direction in legacy_dirs
+                    if direction in ("up", "down", "left", "right")
+                ]
+        self.config["skill_dirs_by_vehicle"] = normalized_skill_dirs
+        self.config["skill_dirs"] = list(normalized_skill_dirs[selected_vehicle])
+        configured_prices = self.config.get("buy_cj_vehicle_prices", {})
+        normalized_prices = dict(DEFAULT_BUY_CJ_VEHICLE_PRICES)
+        if isinstance(configured_prices, dict):
+            for vehicle_key in normalized_prices:
+                try:
+                    configured_price = int(configured_prices.get(vehicle_key, normalized_prices[vehicle_key]))
+                    if configured_price > 0:
+                        normalized_prices[vehicle_key] = configured_price
+                except Exception:
+                    pass
+        self.config["buy_cj_vehicle_prices"] = normalized_prices
+        configured_model_paths = self.config.get("ai_model_paths", {})
+        normalized_model_paths = {
+            "subaru": "models/fh6_car_select_yolo.pt",
+            "mazda": "models/fh6_car_select_mazda_yolo.pt",
+        }
+        if isinstance(configured_model_paths, dict):
+            for vehicle_key in normalized_model_paths:
+                configured_path = str(configured_model_paths.get(vehicle_key, "")).strip()
+                if configured_path:
+                    normalized_model_paths[vehicle_key] = configured_path
+        self.config["ai_model_paths"] = normalized_model_paths
 
         # 3. 将最新、最完整的配置重新写回外置文件
         try:
@@ -691,6 +764,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             self.config["ai_auto_capture"] = self.var_ai_auto_capture.get()
         if hasattr(self, "var_smart_page"):
             self.config["smart_page"] = self.var_smart_page.get()
+        if hasattr(self, "var_buy_cj_vehicle"):
+            selected_vehicle = str(self.var_buy_cj_vehicle.get() or "")
+            self.config["buy_cj_vehicle"] = "mazda" if "马自达" in selected_vehicle else "subaru"
+        self.sync_current_skill_dirs_for_vehicle(self.config.get("buy_cj_vehicle", "subaru"))
         if hasattr(self, "le_restart_cmd"):
             self.config["restart_cmd"] = self.le_restart_cmd.get().strip()
         try:
@@ -906,6 +983,29 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                 break
 
         self.config["skill_dirs"] = valid_dirs
+        self.sync_current_skill_dirs_for_vehicle()
+
+    def sync_current_skill_dirs_for_vehicle(self, mode=None):
+        mode = str(mode or self.config.get("buy_cj_vehicle", "subaru")).lower()
+        if mode not in DEFAULT_SKILL_DIRS_BY_VEHICLE:
+            mode = "subaru"
+        paths = self.config.get("skill_dirs_by_vehicle")
+        if not isinstance(paths, dict):
+            paths = {
+                key: list(value) for key, value in DEFAULT_SKILL_DIRS_BY_VEHICLE.items()
+            }
+            self.config["skill_dirs_by_vehicle"] = paths
+        paths[mode] = list(self.config.get("skill_dirs", []))
+
+    def get_skill_dirs_for_vehicle(self, mode=None):
+        mode = str(mode or self.get_buy_cj_vehicle_mode()).lower()
+        if mode not in DEFAULT_SKILL_DIRS_BY_VEHICLE:
+            mode = "subaru"
+        paths = self.config.get("skill_dirs_by_vehicle", {})
+        dirs = paths.get(mode) if isinstance(paths, dict) else None
+        if not isinstance(dirs, list):
+            dirs = DEFAULT_SKILL_DIRS_BY_VEHICLE[mode]
+        return [direction for direction in dirs if direction in ("up", "down", "left", "right")]
 
     def infer_log_level(self, message, level=None):
         if level:
@@ -1081,6 +1181,51 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.config["diagnostic_mode"] = enabled
         self.save_config()
         self.log("诊断记录已开启。" if enabled else "诊断记录已关闭。")
+
+    def on_buy_cj_vehicle_changed(self, selected):
+        mode = "mazda" if "马自达" in str(selected or "") else "subaru"
+        previous_mode = str(self.config.get("buy_cj_vehicle", "subaru")).lower()
+        if previous_mode in DEFAULT_SKILL_DIRS_BY_VEHICLE:
+            self.sync_current_skill_dirs_for_vehicle(previous_mode)
+        self.config["buy_cj_vehicle"] = mode
+        self.config["skill_dirs"] = self.get_skill_dirs_for_vehicle(mode)
+        self.update_skill_grid()
+        self.save_config()
+        vehicle_name = "马自达（通行证车辆）" if mode == "mazda" else "斯巴鲁 22B"
+        unit_price = self.get_buy_cj_vehicle_price(mode)
+        if hasattr(self, "lbl_buy_cj_vehicle_price"):
+            suffix = " · 需要通行证" if mode == "mazda" else ""
+            self.lbl_buy_cj_vehicle_price.configure(text=f"单价 {unit_price:,} CR{suffix}")
+        self.log(f"买车/超抽车辆方案已切换为：{vehicle_name}，单价 {unit_price:,} CR")
+        arrows = {"up": "↑", "down": "↓", "left": "←", "right": "→"}
+        path_text = " ".join(arrows[direction] for direction in self.config["skill_dirs"])
+        self.log(f"技能树路径已自动切换为：{path_text}")
+        self.yolo_car_select_model = None
+        self.yolo_car_select_model_path = None
+        self.ai_model_preload_started = False
+        if self.config.get("ai_assist", False):
+            self.preload_ai_model_async()
+
+    def get_buy_cj_vehicle_mode(self, prefer_active=True):
+        if prefer_active:
+            active_mode = str(getattr(self, "active_buy_cj_vehicle", "")).lower()
+            if active_mode in ("subaru", "mazda"):
+                return active_mode
+        if hasattr(self, "var_buy_cj_vehicle"):
+            selected = str(self.var_buy_cj_vehicle.get() or "")
+            return "mazda" if "马自达" in selected else "subaru"
+        selected = str(self.config.get("buy_cj_vehicle", "subaru")).lower()
+        return selected if selected in ("subaru", "mazda") else "subaru"
+
+    def get_buy_cj_vehicle_price(self, mode=None):
+        mode = mode or self.get_buy_cj_vehicle_mode()
+        prices = self.config.get("buy_cj_vehicle_prices", {})
+        fallback = DEFAULT_BUY_CJ_VEHICLE_PRICES.get(mode, DEFAULT_BUY_CJ_VEHICLE_PRICES["subaru"])
+        try:
+            price = int(prices.get(mode, fallback)) if isinstance(prices, dict) else int(fallback)
+        except Exception:
+            price = int(fallback)
+        return price if price > 0 else int(fallback)
 
     def start_diagnostic_trace_session(self, session_name):
         if not bool(self.config.get("diagnostic_mode", False)):
@@ -1373,13 +1518,19 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.total_car_bought = 0
         self.total_car_limit = None
         self.stop_after_cj_due_buy_limit = False
+        self.active_buy_cj_vehicle = self.get_buy_cj_vehicle_mode(prefer_active=False)
+        self.active_buy_vehicle_price = self.get_buy_cj_vehicle_price(self.active_buy_cj_vehicle)
         try:
             cr_amount = max(0, int(getattr(self, "entry_cr_amount", None).get() or 0))
         except Exception:
             cr_amount = max(0, int(self.config.get("cr_amount", 0) or 0))
         if cr_amount > 0:
-            self.total_car_limit = cr_amount // 86000
-            self.log(f"已启用 CR 买车限制：CR={cr_amount}，总买车上限={self.total_car_limit}")
+            self.total_car_limit = cr_amount // self.active_buy_vehicle_price
+            vehicle_name = "马自达" if self.active_buy_cj_vehicle == "mazda" else "斯巴鲁 22B"
+            self.log(
+                f"已启用 CR 买车限制：车辆={vehicle_name}，单价={self.active_buy_vehicle_price:,} CR，"
+                f"可用CR={cr_amount:,}，总买车上限={self.total_car_limit}"
+            )
         else:
             self.log("未启用 CR 买车限制，批量买车将按原设定执行。")
         self.invalid_blueprint_abort = False
@@ -1580,6 +1731,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
 
 
     def start_hotkey_listener(self):
+        if keyboard is None:
+            self.log("未检测到 pynput，已跳过 F8/F3 全局热键监听，可继续使用界面按钮操作。")
+            return
+
         def hotkey_thread():
             def on_press(k):
                 if k == keyboard.Key.f8:

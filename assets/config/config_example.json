@@ -16,10 +16,26 @@
         "up",
         "left"
     ],
-    "share_code": "890169683",
+    "skill_dirs_by_vehicle": {
+        "subaru": ["right", "up", "up", "up", "left"],
+        "mazda": ["right", "right", "up", "up", "up"]
+    },
+    "skillcar_templates": [
+        "skillcar_r917.png"
+    ],
+    "buy_cj_vehicle": "subaru",
+    "buy_cj_vehicle_prices": {
+        "subaru": 330000,
+        "mazda": 95000
+    },
+    "share_code": "103435586",
     "auto_restart": false,
     "restart_cmd": "start steam://run/2483190",
     "calc_a": "1000000",
     "calc_b": "81700",
-    "calc_c": "30"
+    "calc_c": "30",
+    "ai_model_paths": {
+        "subaru": "models/fh6_car_select_yolo.pt",
+        "mazda": "models/fh6_car_select_mazda_yolo.pt"
+    }
 }

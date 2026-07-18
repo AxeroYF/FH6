@@ -22,18 +22,57 @@ from recognition_config import get_recognition_profile
 MATCH_THRESHOLD = 0.8
 
 
+CONSUMABLE_CAR_TEMPLATE_PROFILES = {
+    "subaru": {
+        "vehicle_name": "斯巴鲁 22B",
+        "main_template": "newCC.png",
+        "tag_template": "newcartag.png",
+        "class_template": "classB600.png",
+        "class_label": "B600",
+        "class_threshold": 0.58,
+        "car_threshold": 0.56,
+        "top_threshold": 0.72,
+        "bottom_threshold": 0.72,
+        "fixed_title_threshold": 0.0,
+        "vehicle_detail_threshold": 0.0,
+    },
+    "mazda": {
+        "vehicle_name": "马自达 #123 Mad Mike 808 Wagon",
+        "main_template": "newCC_Mazda.png",
+        "tag_template": "newcartag_Mazda.png",
+        "class_template": "classS1702_Mazda.png",
+        "class_label": "S1 702",
+        # 马自达列表里所有车辆共用大面积白底卡片，必须依赖车型细节而不是整卡轮廓。
+        "class_threshold": 0.80,
+        "car_threshold": 0.82,
+        "top_threshold": 0.78,
+        "bottom_threshold": 0.78,
+        "fixed_title_threshold": 0.78,
+        "vehicle_detail_threshold": 0.76,
+    },
+}
+
+
 class ImageMatcherMixin:
     # ==========================================
     def should_capture_diagnostic_template(self, template_name):
         watched = {
             "eventlab.png",
+            "joinchallenge.png",
+            "changecar.png",
             "racenotfound.png",
             "VEI.png",
             "skillcarbrand.png",
+            "skillcar_r917.png",
             "consumablecar.png",
+            "CCbrand_Mazda.png",
+            "consumablecar_Mazda.png",
             "newCC.png",
             "newcartag.png",
             "classB600.png",
+            "newCC_Mazda.png",
+            "newcartag_Mazda.png",
+            "classS1702_Mazda.png",
         }
         return os.path.basename(str(template_name or "")) in watched
 
@@ -527,7 +566,8 @@ class ImageMatcherMixin:
             self.log(f"find_image_with_element_stable 识别报错: {e}")
             return None
     def find_image_with_element_multi(self, main_path, sub_path, region=None, fast_mode=True,
-        main_threshold=0.60, like_threshold=0.75, final_threshold=0.72, mask_areas=None):
+        main_threshold=0.60, like_threshold=0.75, final_threshold=0.72, mask_areas=None,
+        detail_box=None, detail_threshold=0.0):
         if not self.is_running:
             return None
 
@@ -611,6 +651,14 @@ class ImageMatcherMixin:
                     if like_score < like_threshold:
                         continue
 
+                    detail_score = self.match_normalized_detail_score(
+                        roi_bgr,
+                        main_tpl_c,
+                        detail_box,
+                    )
+                    if detail_box and detail_score < detail_threshold:
+                        continue
+
                     # 计算综合得分。
                     final_score = (
                         color_score * 0.35 +
@@ -631,7 +679,8 @@ class ImageMatcherMixin:
                             f"[MultiMatch] 锁定目标: {main_path}+{sub_path} | "
                             f"综合: {final_score:.3f} | 彩色: {color_score:.3f} | "
                             f"灰度: {gray_score:.3f} | 边缘: {edge_score:.3f} | "
-                            f"中心: {center_score:.3f} | 标签: {like_score:.3f}"
+                            f"中心: {center_score:.3f} | 标签: {like_score:.3f} | "
+                            f"等级区域: {detail_score:.3f}"
                         )
                         return curr_pos
 
@@ -729,53 +778,127 @@ class ImageMatcherMixin:
 
         return None
 
-    def find_skill_car_with_like_tag(self, region=None, timeout=3.0, interval=0.25):
+    def get_skillcar_template_names(self):
+        configured = self.config.get("skillcar_templates", ["skillcar_r917.png"])
+        if isinstance(configured, str):
+            configured = [configured]
+
+        names = []
+        for item in configured or []:
+            name = str(item).strip()
+            if name and name not in names:
+                names.append(name)
+        return names or ["skillcar_r917.png"]
+
+    def get_skillcar_fast_scales(self):
+        """Return a small scale set centered on the calibrated 2560px car-card source."""
+        full_region = self.regions.get("全界面")
+        curr_w = float(full_region[2]) if full_region else float(pyautogui.size()[0])
+        calibration = getattr(self, "match_calibration", {}) or {}
+        preferred = float(calibration.get("preferred_scale", curr_w / 2560.0) or 1.0)
+        expected = curr_w / 2560.0
+        scales = []
+        for value in (
+            preferred,
+            expected,
+            expected * 0.99,
+            expected * 1.01,
+            preferred * 0.99,
+            preferred * 1.01,
+        ):
+            value = round(float(value), 3)
+            if 0.45 <= value <= 1.8 and value not in scales:
+                scales.append(value)
+        return scales
+
+    def find_skill_car_with_like_tag(
+        self,
+        region=None,
+        timeout=3.0,
+        interval=0.25,
+        fast_scan=False,
+    ):
         profile = get_recognition_profile(
             self,
             "matcher.skillcar_like_combo",
             timeout=timeout,
             interval=interval,
         )
+        template_names = self.get_skillcar_template_names()
         start = time.time()
+        attempts = 0
         while self.is_running and time.time() - start < profile["timeout"]:
-            pos = self.find_image_with_element_multi(
-                "skillcar.png",
-                "liketag.png",
-                region=region,
-                fast_mode=profile["fast_mode"],
-                main_threshold=profile["main_threshold"],
-                like_threshold=profile["like_threshold"],
-                final_threshold=profile["final_threshold"],
-            )
-            if pos:
-                return pos
+            attempts += 1
+            for template_name in template_names:
+                if fast_scan:
+                    # 实机日志表明 R917 依赖“先找 liketag、再反查车辆卡片”的路径。
+                    # 快速模式只检查校准比例附近的尺度，保留可靠性同时避免全尺度遍历。
+                    pos = self.find_skill_car_from_like_tag(
+                        region=region,
+                        car_template_name=template_name,
+                        scale_candidates=self.get_skillcar_fast_scales(),
+                    )
+                    if pos:
+                        return pos
+                    continue
 
-            pos = self.find_skill_car_from_like_tag(region=region)
-            if pos:
-                return pos
+                pos = self.find_image_with_element_multi(
+                    template_name,
+                    "liketag.png",
+                    region=region,
+                    fast_mode=profile["fast_mode"],
+                    main_threshold=profile["main_threshold"],
+                    like_threshold=profile["like_threshold"],
+                    final_threshold=profile["final_threshold"],
+                    detail_box=profile.get("detail_box"),
+                    detail_threshold=profile.get("detail_threshold", 0.0),
+                )
+                if pos:
+                    self.log(f"[SkillCar] 命中目标刷图车模板: {template_name}")
+                    return pos
 
+                pos = self.find_skill_car_from_like_tag(
+                    region=region,
+                    car_template_name=template_name,
+                )
+                if pos:
+                    return pos
+
+            if fast_scan and attempts >= 1:
+                break
             time.sleep(profile["interval"])
-        if hasattr(self, "capture_diagnostic_snapshot"):
+        if not fast_scan and hasattr(self, "capture_diagnostic_snapshot"):
             self.capture_diagnostic_snapshot(
                 "miss_skillcar_liketag",
                 region=region,
                 reason="未找到带 liketag 的刷图车辆",
                 level="WARN",
-                meta={"timeout": profile["timeout"], "interval": profile["interval"]},
+                meta={
+                    "timeout": profile["timeout"],
+                    "interval": profile["interval"],
+                    "templates": template_names,
+                },
                 dedupe_key="miss:skillcar_liketag",
             )
         return None
 
-    def find_skill_car_from_like_tag(self, region=None):
+    def find_skill_car_from_like_tag(
+        self,
+        region=None,
+        car_template_name=None,
+        scale_candidates=None,
+    ):
         if not self.is_running:
             return None
         try:
+            car_template_name = car_template_name or self.get_skillcar_template_names()[0]
+            profile = get_recognition_profile(self, "matcher.skillcar_like_combo")
             screen_bgr = self.capture_region(region)
-            scales_to_try = self.get_scales_to_try(fast_mode=False)
+            scales_to_try = scale_candidates or self.get_scales_to_try(fast_mode=False)
             best_debug = None
 
             for scale in scales_to_try:
-                car_tpl, _ = self.get_scaled_template("skillcar.png", scale)
+                car_tpl, _ = self.get_scaled_template(car_template_name, scale)
                 tag_tpl, _ = self.get_scaled_template("liketag.png", scale)
                 if car_tpl is None or tag_tpl is None:
                     continue
@@ -821,11 +944,25 @@ class ImageMatcherMixin:
                         best_debug = f"car low tag:{tag_score:.3f} car:{car_score:.3f} scale:{scale:.3f}"
                         continue
 
+                    card_roi = screen_bgr[card_y:card_y + h_c, card_x:card_x + w_c]
+                    detail_score = self.match_normalized_detail_score(
+                        card_roi,
+                        car_tpl,
+                        profile.get("detail_box"),
+                    )
+                    if detail_score < profile.get("detail_threshold", 0.0):
+                        best_debug = (
+                            f"detail low tag:{tag_score:.3f} car:{car_score:.3f} "
+                            f"detail:{detail_score:.3f} scale:{scale:.3f}"
+                        )
+                        continue
+
                     click_x = card_x + w_c // 2 + (region[0] if region else 0)
                     click_y = card_y + h_c // 2 + (region[1] if region else 0)
                     self.log(
-                        f"[SkillCar] reverse hit: tag={tag_score:.3f} car={car_score:.3f} "
-                        f"rel=({rel_x},{rel_y}) scale={scale:.3f}"
+                        f"[SkillCar] reverse hit: template={car_template_name} "
+                        f"tag={tag_score:.3f} car={car_score:.3f} "
+                        f"detail={detail_score:.3f} rel=({rel_x},{rel_y}) scale={scale:.3f}"
                     )
                     return (click_x, click_y)
 
@@ -1322,6 +1459,22 @@ class ImageMatcherMixin:
         if not self.is_running:
             return None
         try:
+            vehicle_mode = self.get_buy_cj_vehicle_mode()
+            template_profile = CONSUMABLE_CAR_TEMPLATE_PROFILES.get(
+                vehicle_mode,
+                CONSUMABLE_CAR_TEMPLATE_PROFILES["subaru"],
+            )
+            main_template = template_profile["main_template"]
+            tag_template = template_profile["tag_template"]
+            class_template = template_profile["class_template"]
+            class_label = template_profile["class_label"]
+            vehicle_name = template_profile["vehicle_name"]
+            class_threshold = float(template_profile["class_threshold"])
+            car_threshold = float(template_profile["car_threshold"])
+            top_threshold = float(template_profile["top_threshold"])
+            bottom_threshold = float(template_profile["bottom_threshold"])
+            fixed_title_threshold = float(template_profile["fixed_title_threshold"])
+            vehicle_detail_threshold = float(template_profile["vehicle_detail_threshold"])
             screen_bgr = self.capture_region(region)
             scales = []
             for s in [1.0, 0.98, 1.02, 0.95, 1.05]:
@@ -1333,9 +1486,9 @@ class ImageMatcherMixin:
 
             final_debug = None
             for scale in scales:
-                main_tpl, _ = self.get_scaled_template("newCC.png", scale)
-                tag_tpl, _ = self.get_scaled_template("newcartag.png", scale)
-                class_tpl, _ = self.get_scaled_template("classB600.png", scale)
+                main_tpl, _ = self.get_scaled_template(main_template, scale)
+                tag_tpl, _ = self.get_scaled_template(tag_template, scale)
+                class_tpl, _ = self.get_scaled_template(class_template, scale)
                 if main_tpl is None or tag_tpl is None or class_tpl is None:
                     continue
 
@@ -1352,21 +1505,26 @@ class ImageMatcherMixin:
                 tag_res = cv2.matchTemplate(screen_bgr, tag_tpl, cv2.TM_CCOEFF_NORMED)
                 loc = np.where(tag_res >= 0.72)
                 tag_points = list(zip(*loc[::-1]))
-                if not tag_points:
-                    _, max_tag, _, max_loc = cv2.minMaxLoc(tag_res)
-                    if max_tag >= 0.64:
-                        tag_points = [max_loc]
+                _, max_tag, _, max_loc = cv2.minMaxLoc(tag_res)
+                if not tag_points and max_tag >= 0.64:
+                    tag_points = [max_loc]
 
                 checked_tags = set()
                 tag_candidates = []
-                for tx, ty in tag_points:
+                # 同一个标签会产生一簇相邻命中。先按分数降序去重，避免低分辨率下
+                # 左上角的弱命中先占用网格、把真正的峰值坐标过滤掉。
+                scored_tag_points = sorted(
+                    ((float(tag_res[ty, tx]), tx, ty) for tx, ty in tag_points),
+                    reverse=True,
+                )
+                for tag_score, tx, ty in scored_tag_points:
                     if tx < int(screen_bgr.shape[1] * 0.20) or ty < int(screen_bgr.shape[0] * 0.18) or ty > int(screen_bgr.shape[0] * 0.90):
                         continue
                     tag_key = (tx // 18, ty // 14)
                     if tag_key in checked_tags:
                         continue
                     checked_tags.add(tag_key)
-                    tag_candidates.append((ty, tx, float(tag_res[ty, tx])))
+                    tag_candidates.append((ty, tx, tag_score))
 
                 tag_candidates.sort()
                 if not tag_candidates:
@@ -1375,7 +1533,7 @@ class ImageMatcherMixin:
 
                 last_debug = None
                 for ty, tx, tag_score in tag_candidates:
-                    # 验证 2：在 NEW 标签下方继续确认 B600 等级条。
+                    # 验证 2：在 NEW 标签下方继续确认当前车辆方案对应的等级条。
                     cx1 = max(0, int(tx - w_c * 1.45))
                     cy1 = max(0, int(ty - h_c * 0.25))
                     cx2 = min(screen_bgr.shape[1], int(tx + w_t + w_c * 0.40))
@@ -1386,15 +1544,15 @@ class ImageMatcherMixin:
 
                     class_res = cv2.matchTemplate(class_search, class_tpl, cv2.TM_CCOEFF_NORMED)
                     _, class_score, _, class_loc = cv2.minMaxLoc(class_res)
-                    if class_score < 0.58:
+                    if class_score < class_threshold:
                         last_debug = {
-                            "reason": f"class low NEW:{tag_score:.3f} B600:{class_score:.3f} scale:{scale:.3f}",
+                            "reason": f"class low NEW:{tag_score:.3f} {class_label}:{class_score:.3f} scale:{scale:.3f}",
                             "boxes": {"new": (tx, ty, w_t, h_t)},
                             "scores": {"new": tag_score, "b600": float(class_score)},
                         }
                         self.log(
                             f"[StrictCar] 全新标签通过，但等级条不达标 NEW:{tag_score:.3f} "
-                            f"B600:{class_score:.3f} 缂╂斁:{scale:.3f}"
+                            f"{class_label}:{class_score:.3f} 缩放:{scale:.3f}"
                         )
                         continue
 
@@ -1442,9 +1600,9 @@ class ImageMatcherMixin:
                         )
                         continue
 
-                    if near_score < 0.56:
+                    if near_score < car_threshold:
                         last_debug = {
-                            "reason": f"car low NEW:{tag_score:.3f} B600:{class_score:.3f} car:{near_score:.3f} scale:{scale:.3f}",
+                            "reason": f"car low NEW:{tag_score:.3f} {class_label}:{class_score:.3f} car:{near_score:.3f} scale:{scale:.3f}",
                             "boxes": boxes,
                             "scores": scores,
                         }
@@ -1465,14 +1623,14 @@ class ImageMatcherMixin:
                         if roi_top.shape[0] >= tpl_top_core.shape[0] and roi_top.shape[1] >= tpl_top_core.shape[1]:
                             top_res = cv2.matchTemplate(roi_top, tpl_top_core, cv2.TM_CCOEFF_NORMED)
                             _, top_score, _, _ = cv2.minMaxLoc(top_res)
-                    if top_score < 0.72:
+                    if top_score < top_threshold:
                         last_debug = {
-                            "reason": f"top low NEW:{tag_score:.3f} B600:{class_score:.3f} car:{near_score:.3f} top:{top_score:.3f}",
+                            "reason": f"top low NEW:{tag_score:.3f} {class_label}:{class_score:.3f} car:{near_score:.3f} top:{top_score:.3f}",
                             "boxes": boxes,
                             "scores": {**scores, "top": float(top_score)},
                         }
                         self.log(
-                            f"[StrictCar] 车名区域验证失败: NEW:{tag_score:.3f} B600:{class_score:.3f} "
+                            f"[StrictCar] 车名区域验证失败: NEW:{tag_score:.3f} {class_label}:{class_score:.3f} "
                             f"目标:{near_score:.3f} 车名:{top_score:.3f} 缩放:{scale:.3f}"
                         )
                         continue
@@ -1487,23 +1645,82 @@ class ImageMatcherMixin:
                         if roi_bottom.shape[0] >= tpl_bottom_core.shape[0] and roi_bottom.shape[1] >= tpl_bottom_core.shape[1]:
                             bottom_res = cv2.matchTemplate(roi_bottom, tpl_bottom_core, cv2.TM_CCOEFF_NORMED)
                             _, bottom_score, _, _ = cv2.minMaxLoc(bottom_res)
-                    if bottom_score < 0.72:
+                    if bottom_score < bottom_threshold:
                         last_debug = {
-                            "reason": f"bottom low NEW:{tag_score:.3f} B600:{class_score:.3f} car:{near_score:.3f} top:{top_score:.3f} bottom:{bottom_score:.3f}",
+                            "reason": f"bottom low NEW:{tag_score:.3f} {class_label}:{class_score:.3f} car:{near_score:.3f} top:{top_score:.3f} bottom:{bottom_score:.3f}",
                             "boxes": boxes,
                             "scores": {**scores, "top": float(top_score), "bottom": float(bottom_score)},
                         }
                         self.log(
-                            f"[StrictCar] 底部等级区域验证失败: NEW:{tag_score:.3f} B600:{class_score:.3f} "
+                            f"[StrictCar] 底部等级区域验证失败: NEW:{tag_score:.3f} {class_label}:{class_score:.3f} "
                             f"目标:{near_score:.3f} 车名:{top_score:.3f} 底部:{bottom_score:.3f} 缩放:{scale:.3f}"
                         )
                         continue
 
+                    # 马自达卡片的大面积白底会让其他车型也取得较高整卡分数。
+                    # 固定对齐验证标题与车辆主体，不允许在邻近区域内滑动寻找相似结构。
+                    fixed_title_score = 1.0
+                    if fixed_title_threshold > 0:
+                        fx1 = int(w_m * 0.05)
+                        fx2 = int(w_m * 0.95)
+                        fy2 = max(8, int(h_m * 0.28))
+                        tpl_fixed_title = cv2.cvtColor(main_tpl[:fy2, fx1:fx2], cv2.COLOR_BGR2GRAY)
+                        roi_fixed_title = cv2.cvtColor(card_roi[:fy2, fx1:fx2], cv2.COLOR_BGR2GRAY)
+                        fixed_title_score = float(cv2.matchTemplate(
+                            roi_fixed_title,
+                            tpl_fixed_title,
+                            cv2.TM_CCOEFF_NORMED,
+                        )[0, 0])
+                        if fixed_title_score < fixed_title_threshold:
+                            last_debug = {
+                                "reason": (
+                                    f"fixed title low NEW:{tag_score:.3f} {class_label}:{class_score:.3f} "
+                                    f"car:{near_score:.3f} title_fixed:{fixed_title_score:.3f}"
+                                ),
+                                "boxes": boxes,
+                                "scores": {**scores, "title_fixed": fixed_title_score},
+                            }
+                            self.log(
+                                f"[StrictCar] 固定车名验证失败: {vehicle_name} "
+                                f"车名固定区域:{fixed_title_score:.3f} 阈值:{fixed_title_threshold:.3f}"
+                            )
+                            continue
+
+                    vehicle_detail_score = 1.0
+                    if vehicle_detail_threshold > 0:
+                        vx1 = int(w_m * 0.18)
+                        vx2 = int(w_m * 0.83)
+                        vy1 = int(h_m * 0.30)
+                        vy2 = int(h_m * 0.80)
+                        tpl_vehicle = main_tpl[vy1:vy2, vx1:vx2]
+                        roi_vehicle = card_roi[vy1:vy2, vx1:vx2]
+                        vehicle_detail_score = float(cv2.matchTemplate(
+                            roi_vehicle,
+                            tpl_vehicle,
+                            cv2.TM_CCOEFF_NORMED,
+                        )[0, 0])
+                        if vehicle_detail_score < vehicle_detail_threshold:
+                            last_debug = {
+                                "reason": (
+                                    f"vehicle detail low NEW:{tag_score:.3f} {class_label}:{class_score:.3f} "
+                                    f"car:{near_score:.3f} vehicle:{vehicle_detail_score:.3f}"
+                                ),
+                                "boxes": boxes,
+                                "scores": {**scores, "vehicle_detail": vehicle_detail_score},
+                            }
+                            self.log(
+                                f"[StrictCar] 车辆主体验证失败: {vehicle_name} "
+                                f"涂装/车型:{vehicle_detail_score:.3f} 阈值:{vehicle_detail_threshold:.3f}"
+                            )
+                            continue
+
                     click_x = card_x + w_m // 2 + (region[0] if region else 0)
                     click_y = card_y + h_m // 2 + (region[1] if region else 0)
                     self.log(
-                        f"[StrictCar] 全新+B600+目标车验证通过: NEW:{tag_score:.3f} B600:{class_score:.3f} "
+                        f"[StrictCar] {vehicle_name} 全新+{class_label}+目标车验证通过: "
+                        f"NEW:{tag_score:.3f} {class_label}:{class_score:.3f} "
                         f"目标:{near_score:.3f} 车名:{top_score:.3f} 底部:{bottom_score:.3f} "
+                        f"固定车名:{fixed_title_score:.3f} 涂装/车型:{vehicle_detail_score:.3f} "
                         f"标签相对:({tag_rel_x},{tag_rel_y}) 等级:({class_x},{class_y}) 缩放:{scale:.3f}"
                     )
                     if self.config.get("ai_auto_capture", False):
@@ -1512,7 +1729,13 @@ class ImageMatcherMixin:
                             "pass",
                             reason=f"pass scale:{scale:.3f}",
                             boxes=boxes,
-                            scores={**scores, "top": float(top_score), "bottom": float(bottom_score)},
+                            scores={
+                                **scores,
+                                "top": float(top_score),
+                                "bottom": float(bottom_score),
+                                "title_fixed": fixed_title_score,
+                                "vehicle_detail": vehicle_detail_score,
+                            },
                             click=(click_x - (region[0] if region else 0), click_y - (region[1] if region else 0)),
                             force=True,
                         )
@@ -1611,6 +1834,146 @@ class ImageMatcherMixin:
         y1 = max(0, (h - ch) // 2)
         x1 = max(0, (w - cw) // 2)
         return img[y1:y1 + ch, x1:x1 + cw]
+
+    def match_normalized_detail_score(self, src, tpl, detail_box):
+        if not detail_box or len(detail_box) != 4 or src is None or tpl is None:
+            return 1.0
+        try:
+            sh, sw = src.shape[:2]
+            th, tw = tpl.shape[:2]
+            x1, y1, x2, y2 = [float(v) for v in detail_box]
+            src_detail = src[
+                max(0, int(sh * y1)):min(sh, int(sh * y2)),
+                max(0, int(sw * x1)):min(sw, int(sw * x2)),
+            ]
+            tpl_detail = tpl[
+                max(0, int(th * y1)):min(th, int(th * y2)),
+                max(0, int(tw * x1)):min(tw, int(tw * x2)),
+            ]
+            if src_detail.shape[:2] != tpl_detail.shape[:2]:
+                return 0.0
+            return self.match_template_score(src_detail, tpl_detail)
+        except Exception:
+            return 0.0
+
+    def find_reference_crop_gray(self, reference_path, crop_box, region=None,
+                                 threshold=0.72, fast_mode=False, invert_mode=False):
+        """Match a stable normalized crop from a full reference screenshot."""
+        if not self.is_running or not crop_box or len(crop_box) != 4:
+            return None
+        try:
+            cache = getattr(self, "reference_crop_cache", None)
+            if cache is None:
+                cache = {}
+                self.reference_crop_cache = cache
+            cache_key = (reference_path, tuple(float(v) for v in crop_box))
+            crop_gray = cache.get(cache_key)
+            if crop_gray is None:
+                reference = cv2.imread(get_img_path(reference_path), cv2.IMREAD_COLOR)
+                if reference is None:
+                    self.log(f"参考截图读取失败: {reference_path}")
+                    return None
+
+                rh, rw = reference.shape[:2]
+                x1, y1, x2, y2 = [float(v) for v in crop_box]
+                crop = reference[
+                    max(0, int(rh * y1)):min(rh, int(rh * y2)),
+                    max(0, int(rw * x1)):min(rw, int(rw * x2)),
+                ]
+                if crop.shape[0] < 5 or crop.shape[1] < 5:
+                    return None
+                crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                cache[cache_key] = crop_gray
+
+            screen_bgr = self.capture_region(region)
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            effective_threshold = self.get_calibrated_gray_threshold(threshold)
+
+            for scale in self.get_scales_to_try(fast_mode=fast_mode):
+                tpl = crop_gray if scale == 1.0 else cv2.resize(
+                    crop_gray,
+                    None,
+                    fx=scale,
+                    fy=scale,
+                    interpolation=cv2.INTER_AREA,
+                )
+                th, tw = tpl.shape[:2]
+                if th < 5 or tw < 5 or th > screen_gray.shape[0] or tw > screen_gray.shape[1]:
+                    continue
+
+                variants = [("normal", tpl)]
+                if invert_mode:
+                    variants.append(("invert", cv2.bitwise_not(tpl)))
+                for mode, candidate in variants:
+                    result = cv2.matchTemplate(screen_gray, candidate, cv2.TM_CCOEFF_NORMED)
+                    _, score, _, loc = cv2.minMaxLoc(result)
+                    if score >= effective_threshold:
+                        cx = loc[0] + tw // 2 + (region[0] if region else 0)
+                        cy = loc[1] + th // 2 + (region[1] if region else 0)
+                        self.log(
+                            f"[ReferenceCrop] 命中 {reference_path} mode={mode} "
+                            f"score={score:.3f} scale={scale:.3f}"
+                        )
+                        return (cx, cy)
+
+            return None
+        except Exception as e:
+            self.log(f"find_reference_crop_gray 异常: {reference_path}: {e}")
+            return None
+
+    def score_fixed_reference_crop_gray(self, reference_path, crop_box, screen_bgr=None):
+        """Score the same normalized screen location as a reference crop without position search."""
+        if not crop_box or len(crop_box) != 4:
+            return 0.0
+        try:
+            cache = getattr(self, "fixed_reference_crop_cache", None)
+            if cache is None:
+                cache = {}
+                self.fixed_reference_crop_cache = cache
+
+            cache_key = (reference_path, tuple(float(v) for v in crop_box))
+            reference_gray = cache.get(cache_key)
+            if reference_gray is None:
+                reference = cv2.imread(get_img_path(reference_path), cv2.IMREAD_COLOR)
+                if reference is None:
+                    return 0.0
+                rh, rw = reference.shape[:2]
+                x1, y1, x2, y2 = [float(v) for v in crop_box]
+                reference_crop = reference[
+                    max(0, int(rh * y1)):min(rh, int(rh * y2)),
+                    max(0, int(rw * x1)):min(rw, int(rw * x2)),
+                ]
+                if reference_crop.shape[0] < 5 or reference_crop.shape[1] < 5:
+                    return 0.0
+                reference_gray = cv2.cvtColor(reference_crop, cv2.COLOR_BGR2GRAY)
+                cache[cache_key] = reference_gray
+
+            if screen_bgr is None:
+                screen_bgr = self.capture_region(self.regions.get("全界面"))
+            sh, sw = screen_bgr.shape[:2]
+            x1, y1, x2, y2 = [float(v) for v in crop_box]
+            screen_crop = screen_bgr[
+                max(0, int(sh * y1)):min(sh, int(sh * y2)),
+                max(0, int(sw * x1)):min(sw, int(sw * x2)),
+            ]
+            if screen_crop.shape[0] < 5 or screen_crop.shape[1] < 5:
+                return 0.0
+
+            screen_gray = cv2.cvtColor(screen_crop, cv2.COLOR_BGR2GRAY)
+            template = cv2.resize(
+                reference_gray,
+                (screen_gray.shape[1], screen_gray.shape[0]),
+                interpolation=cv2.INTER_AREA,
+            )
+            return float(cv2.matchTemplate(
+                screen_gray,
+                template,
+                cv2.TM_CCOEFF_NORMED,
+            )[0, 0])
+        except Exception as e:
+            self.log(f"score_fixed_reference_crop_gray 异常: {reference_path}: {e}")
+            return 0.0
+
     def find_image_gray(self, template_path, region=None, threshold=0.75, fast_mode=True, invert_mode=False):
         """
         灰度模板匹配，支持多分辨率缩放和可选反相匹配。

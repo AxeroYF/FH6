@@ -1,5 +1,6 @@
 import argparse
 import json
+import random
 import re
 import shutil
 from pathlib import Path
@@ -50,7 +51,9 @@ def yolo_line(cls_id, box, img_w, img_h):
 def nms_points(res, threshold, cell_w, cell_h):
     ys, xs = np.where(res >= threshold)
     points = [(int(y), int(x), float(res[y, x])) for y, x in zip(ys, xs)]
-    points.sort(key=lambda p: (p[0], p[1], -p[2]))
+    # Keep the strongest point in each local cell. Sorting by screen position first
+    # can retain a weak shoulder response and discard the real peak at low scales.
+    points.sort(key=lambda p: p[2], reverse=True)
     seen = set()
     out = []
     for y, x, score in points:
@@ -103,7 +106,15 @@ def detect_template_boxes(img, tpl_raw, scales, threshold, class_name):
     return dedupe_boxes(all_boxes)
 
 
-def validate_target_car_box(img, car_tpl, box, top_threshold=0.62, bottom_threshold=0.62):
+def validate_target_car_box(
+    img,
+    car_tpl,
+    box,
+    top_threshold=0.62,
+    bottom_threshold=0.62,
+    fixed_title_threshold=0.0,
+    vehicle_detail_threshold=0.0,
+):
     x, y, w, h = box
     roi = img[y:y + h, x:x + w]
     if roi.shape[:2] != car_tpl.shape[:2]:
@@ -134,21 +145,61 @@ def validate_target_car_box(img, car_tpl, box, top_threshold=0.62, bottom_thresh
             res = cv2.matchTemplate(roi_bottom, tpl_bottom_core, cv2.TM_CCOEFF_NORMED)
             _, bottom_score, _, _ = cv2.minMaxLoc(res)
 
-    return top_score >= top_threshold and bottom_score >= bottom_threshold, float(top_score), float(bottom_score)
+    fixed_title_score = 1.0
+    if fixed_title_threshold > 0:
+        fx1 = int(w * 0.05)
+        fx2 = int(w * 0.95)
+        fy2 = max(8, int(h * 0.28))
+        fixed_title_score = float(cv2.matchTemplate(
+            gray_roi[:fy2, fx1:fx2],
+            gray_tpl[:fy2, fx1:fx2],
+            cv2.TM_CCOEFF_NORMED,
+        )[0, 0])
+
+    vehicle_detail_score = 1.0
+    if vehicle_detail_threshold > 0:
+        vx1 = int(w * 0.18)
+        vx2 = int(w * 0.83)
+        vy1 = int(h * 0.30)
+        vy2 = int(h * 0.80)
+        vehicle_detail_score = float(cv2.matchTemplate(
+            roi[vy1:vy2, vx1:vx2],
+            car_tpl[vy1:vy2, vx1:vx2],
+            cv2.TM_CCOEFF_NORMED,
+        )[0, 0])
+
+    ok = (
+        top_score >= top_threshold and
+        bottom_score >= bottom_threshold and
+        fixed_title_score >= fixed_title_threshold and
+        vehicle_detail_score >= vehicle_detail_threshold
+    )
+    return ok, float(top_score), float(bottom_score)
 
 
-def detect_all_draft_boxes(img, car_tpl_raw, tag_tpl_raw, class_tpl_raw, scales):
+def detect_all_draft_boxes(img, car_tpl_raw, tag_tpl_raw, class_tpl_raw, scales, *, mazda=False):
     labels = {name: [] for name in CLASSES}
 
-    labels["new_tag"] = detect_template_boxes(img, tag_tpl_raw, scales, 0.50, "new_tag")
-    labels["class_b600"] = detect_template_boxes(img, class_tpl_raw, scales, 0.78, "class_b600")
+    tag_threshold = 0.72 if mazda else 0.50
+    class_threshold = 0.80 if mazda else 0.78
+    car_threshold = 0.82 if mazda else 0.72
+    labels["new_tag"] = detect_template_boxes(img, tag_tpl_raw, scales, tag_threshold, "new_tag")
+    labels["class_b600"] = detect_template_boxes(img, class_tpl_raw, scales, class_threshold, "class_b600")
 
     car_candidates = []
     for scale in scales:
         car_tpl = scaled(car_tpl_raw, scale)
-        raw_boxes = detect_template_boxes(img, car_tpl_raw, [scale], 0.72, "target_car")
+        raw_boxes = detect_template_boxes(img, car_tpl_raw, [scale], car_threshold, "target_car")
         for score, box in raw_boxes:
-            ok, top_score, bottom_score = validate_target_car_box(img, car_tpl, box)
+            ok, top_score, bottom_score = validate_target_car_box(
+                img,
+                car_tpl,
+                box,
+                top_threshold=0.78 if mazda else 0.62,
+                bottom_threshold=0.78 if mazda else 0.62,
+                fixed_title_threshold=0.78 if mazda else 0.0,
+                vehicle_detail_threshold=0.76 if mazda else 0.0,
+            )
             if ok:
                 car_candidates.append((score + top_score * 0.15 + bottom_score * 0.15, box))
     labels["target_car"] = dedupe_boxes(car_candidates)
@@ -238,6 +289,9 @@ def main():
     parser.add_argument("--tag-template", default="images/1080p/newcartag.png")
     parser.add_argument("--class-template", default="images/1080p/classB600.png")
     parser.add_argument("--scales", default="1.0,0.98,1.02,0.95,1.05")
+    parser.add_argument("--vehicle", choices=["subaru", "mazda"], default="subaru")
+    parser.add_argument("--val-ratio", type=float, default=0.20)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     debug_dir = Path(args.debug_dir)
@@ -284,34 +338,70 @@ def main():
             "note": "Auto-generated draft labels. Review before training.",
         }
 
-        if status == "pass":
-            det = detect_one(img, car_tpl, tag_tpl, class_tpl, scales)
-            all_labels = detect_all_draft_boxes(img, car_tpl, tag_tpl, class_tpl, scales)
-            meta["detection"] = det
-            meta["draft_labels"] = {
-                cls_name: [{"score": float(score), "box": box} for score, box in all_labels[cls_name]]
-                for cls_name in CLASSES
-            }
-            if any(all_labels[cls_name] for cls_name in CLASSES):
-                lines = []
-                for cls_id, cls_name in enumerate(CLASSES):
-                    for _, box in all_labels[cls_name]:
-                        lines.append(yolo_line(cls_id, box, img.shape[1], img.shape[0]))
-                write_text(out_label, "\n".join(lines) + "\n")
-            else:
-                write_text(out_label, "")
-                meta["warning"] = "pass image did not produce draft boxes"
+        # Label every frame, including misses. A frame without a NEW tag can still
+        # contain the target car; leaving it unlabelled would teach YOLO that the
+        # Mazda itself is background. The strict Mazda profile prevents the old
+        # MX-5 false-positive frame from receiving a target_car label.
+        det = detect_one(img, car_tpl, tag_tpl, class_tpl, scales)
+        all_labels = detect_all_draft_boxes(
+            img,
+            car_tpl,
+            tag_tpl,
+            class_tpl,
+            scales,
+            mazda=args.vehicle == "mazda",
+        )
+        meta["detection"] = det
+        meta["draft_labels"] = {
+            cls_name: [{"score": float(score), "box": box} for score, box in all_labels[cls_name]]
+            for cls_name in CLASSES
+        }
+        lines = []
+        for cls_id, cls_name in enumerate(CLASSES):
+            for _, box in all_labels[cls_name]:
+                lines.append(yolo_line(cls_id, box, img.shape[1], img.shape[0]))
+        if lines:
+            write_text(out_label, "\n".join(lines) + "\n")
         else:
             write_text(out_label, "")
 
         out_meta.parent.mkdir(parents=True, exist_ok=True)
         out_meta.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        rows.append((raw_name, status))
+        rows.append({
+            "name": raw_name,
+            "status": status,
+            "has_target": bool(all_labels["target_car"]),
+        })
+
+    # Deterministic, target-stratified train/val split. Draft files remain intact
+    # for review while train/val are immediately usable by Ultralytics.
+    rng = random.Random(args.seed)
+    val_names = set()
+    for has_target in (False, True):
+        group = [row for row in rows if row["has_target"] == has_target]
+        rng.shuffle(group)
+        if len(group) <= 1:
+            val_count = 0
+        else:
+            val_count = max(1, round(len(group) * max(0.0, min(0.5, args.val_ratio))))
+            val_count = min(val_count, len(group) - 1)
+        val_names.update(row["name"] for row in group[:val_count])
+
+    for row in rows:
+        split = "val" if row["name"] in val_names else "train"
+        src_image = images_dir / row["name"]
+        src_label = labels_dir / f"{Path(row['name']).stem}.txt"
+        dst_image = output / "images" / split / row["name"]
+        dst_label = output / "labels" / split / src_label.name
+        dst_image.parent.mkdir(parents=True, exist_ok=True)
+        dst_label.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_image, dst_image)
+        shutil.copy2(src_label, dst_label)
 
     yaml_text = (
         f"path: {output.resolve().as_posix()}\n"
-        "train: images/draft\n"
-        "val: images/draft\n"
+        "train: images/train\n"
+        "val: images/val\n"
         "names:\n"
         + "\n".join(f"  {i}: {name}" for i, name in enumerate(CLASSES))
         + "\n"
@@ -320,8 +410,11 @@ def main():
     write_text(output / "README.md", "# FH6 Car Select Draft Dataset\n\nAuto-exported draft dataset. Review labels before training.\n")
 
     print(f"exported {len(rows)} images to {output}")
-    print(f"pass: {sum(1 for _, s in rows if s == 'pass')}")
-    print(f"miss: {sum(1 for _, s in rows if s == 'miss')}")
+    print(f"pass: {sum(1 for row in rows if row['status'] == 'pass')}")
+    print(f"miss: {sum(1 for row in rows if row['status'] == 'miss')}")
+    print(f"target frames: {sum(1 for row in rows if row['has_target'])}")
+    print(f"train: {sum(1 for row in rows if row['name'] not in val_names)}")
+    print(f"val: {len(val_names)}")
 
 
 if __name__ == "__main__":
