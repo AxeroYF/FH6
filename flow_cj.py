@@ -534,10 +534,17 @@ def select_new_consumable_car_from_list(self):
     for _ in range(85 - jump_pages):
         if not self.is_running:
             return False
-        pos_target = self.wait_for_new_consumable_car(timeout=1.5, interval=0.2)
+        # Mazda pages contain many visually identical cards and YOLO may need
+        # several stable frames before all three labels are present.  Keep the
+        # page still long enough to avoid treating an animation-frame miss as
+        # permission to navigate away.
+        detect_timeout = 3.0 if vehicle_mode == "mazda" else 1.5
+        pos_target = self.wait_for_new_consumable_car(timeout=detect_timeout, interval=0.2)
 
         if pos_target:
-            self.game_click(pos_target)
+            if not self.game_click(pos_target, move_away=False):
+                self.log("目标车辆已识别，但后台点击未成功；停止本轮选车。", level="WARN")
+                return False
             found_car = True
             if smart_page_enabled:
                 self.memory_car_page = current_page
@@ -546,10 +553,17 @@ def select_new_consumable_car_from_list(self):
                 self.log("锁定目标车辆！")
             break
 
+        self.log(
+            f"[AISelect] 当前页稳定检测后仍未命中，执行翻页 {current_page + 1} -> {current_page + 2}",
+            level="DEBUG",
+        )
         for _ in range(4):
             self.hw_press("right", delay=0.06)
             time.sleep(0.1)
-        time.sleep(0.4)
+        # Background key messages are asynchronous.  Wait for the grid to
+        # finish consuming the entire navigation burst before capturing the
+        # next frame, otherwise an old-page detection can race queued RIGHTs.
+        time.sleep(0.9)
         current_page += 1
 
     if not found_car:

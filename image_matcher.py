@@ -1864,12 +1864,22 @@ class ImageMatcherMixin:
         save_debug = self.config.get("ai_auto_capture", False)
 
         if self.is_running and (ai_first or ai_only):
-            pos = self.find_new_consumable_car_with_ai(
-                region=self.regions["全界面"],
-                save_miss=save_debug,
-            )
-            if pos:
-                return pos
+            # Pure-AI selection must observe the current page for the full
+            # timeout.  A single inference can miss classes while the vehicle
+            # grid is still animating; returning immediately would make the
+            # caller enqueue another four RIGHT presses and skip the page just
+            # as the model finishes recognizing the target.
+            ai_deadline = time.time() + max(0.1, float(timeout))
+            while self.is_running:
+                pos = self.find_new_consumable_car_with_ai(
+                    region=self.regions["全界面"],
+                    save_miss=save_debug,
+                )
+                if pos:
+                    return pos
+                if not ai_only or time.time() >= ai_deadline:
+                    break
+                time.sleep(max(0.05, float(interval)))
             if ai_only:
                 return None
 
