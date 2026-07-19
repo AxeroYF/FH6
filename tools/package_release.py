@@ -26,9 +26,6 @@ def read_release_version() -> str:
         return "3.0"
     with version_file.open("r", encoding="utf-8-sig") as fh:
         value = json.load(fh).get("version", "3.0")
-    parts = str(value).split(".")
-    if len(parts) >= 2:
-        return ".".join(parts[:2])
     return str(value)
 
 
@@ -103,9 +100,8 @@ def ai_default_config(*, pure_ai: bool = False) -> dict:
         "chk_1": True,
         "chk_2": True,
         "chk_3": True,
-        "next_1": 2,
-        "next_2": 3,
-        "next_3": 1,
+        "route_cj_delete": True,
+        "route_delete_race": True,
         "global_loops": 10,
         "skill_dirs": ["right", "up", "up", "up", "left"],
         "share_code": "890169683",

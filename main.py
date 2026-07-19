@@ -656,11 +656,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             "chk_1": True,
             "chk_2": True,
             "chk_3": True,
-            "route_race_delete": False,
+            "route_cj_delete": True,
             "route_delete_race": False,
-            "next_1": 2,
-            "next_2": 3,
-            "next_3": 1,
             "global_loops": 10,
             "skill_dirs": list(DEFAULT_SKILL_DIRS_BY_VEHICLE["subaru"]),
             "skill_dirs_by_vehicle": {
@@ -703,8 +700,17 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             except Exception as e:
                 self.log(f"用户 config.json 损坏，已自动恢复默认配置。")
         self.config["ai_prefer"] = bool(self.config.get("ai_assist", False))
-        self.config["route_race_delete"] = bool(self.config.get("route_race_delete", False))
+        if "route_cj_delete" not in user_config:
+            # v4.2 曾把“抽奖→删车”错误地拆成“跑图→删车”等旧开关。
+            # 升级时优先沿用已经开启的删车路线，否则兼容旧 chk_3。
+            self.config["route_cj_delete"] = bool(
+                user_config.get("route_race_delete", user_config.get("chk_3", True))
+            )
+        else:
+            self.config["route_cj_delete"] = bool(self.config.get("route_cj_delete", True))
         self.config["route_delete_race"] = bool(self.config.get("route_delete_race", False))
+        for obsolete_key in ("route_race_delete", "next_1", "next_2", "next_3"):
+            self.config.pop(obsolete_key, None)
         selected_vehicle = str(self.config.get("buy_cj_vehicle", "subaru")).lower()
         self.config["buy_cj_vehicle"] = selected_vehicle if selected_vehicle in ("subaru", "mazda") else "subaru"
         selected_vehicle = self.config["buy_cj_vehicle"]
@@ -776,17 +782,14 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                 self.config["race_timeout"] = max(60, int(self.entry_race_timeout.get()))
             self.config["share_code"] = "".join(c for c in self.entry_share.get() if c.isdigit())
             #self.config["base_width"] = int(self.entry_base_w.get())
-            self.config["next_1"] = int(self.entry_next1.get())
-            self.config["next_2"] = int(self.entry_next2.get())
-            self.config["next_3"] = int(self.entry_next3.get())
         except Exception:
             pass
 
         self.config["chk_1"] = self.var_chk1.get()
         self.config["chk_2"] = self.var_chk2.get()
         self.config["chk_3"] = self.var_chk3.get()
-        if hasattr(self, "var_race_to_delete"):
-            self.config["route_race_delete"] = bool(self.var_race_to_delete.get())
+        if hasattr(self, "var_cj_to_delete"):
+            self.config["route_cj_delete"] = bool(self.var_cj_to_delete.get())
         if hasattr(self, "var_delete_to_race"):
             self.config["route_delete_race"] = bool(self.var_delete_to_race.get())
         self.config["auto_restart"] = self.config.get("auto_restart", False)
@@ -827,32 +830,13 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.save_config()
 
     def resolve_pipeline_next_index(self, curr_idx):
-        """Resolve the configured next step; None means stop after this module."""
+        """Resolve the four fixed adjacent routes; None means stop after this module."""
         if curr_idx == 0:
-            if self.var_chk1.get():
-                try:
-                    return max(0, min(3, int(self.entry_next1.get()) - 1))
-                except Exception:
-                    return 1
-            if self.var_race_to_delete.get():
-                return 3
-            return None
+            return 1 if self.var_chk1.get() else None
         if curr_idx == 1:
-            if self.var_chk2.get():
-                try:
-                    return max(0, min(3, int(self.entry_next2.get()) - 1))
-                except Exception:
-                    return 2
-            return None
+            return 2 if self.var_chk2.get() else None
         if curr_idx == 2:
-            if self.var_race_to_delete.get() and self.var_delete_to_race.get():
-                return 3
-            if self.var_chk3.get():
-                try:
-                    return max(0, min(2, int(self.entry_next3.get()) - 1))
-                except Exception:
-                    return 0
-            return None
+            return 3 if self.var_cj_to_delete.get() else None
         if curr_idx == 3:
             return 0 if self.var_delete_to_race.get() else None
         return None

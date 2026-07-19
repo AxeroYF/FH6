@@ -6,11 +6,8 @@
     "chk_1": true,
     "chk_2": true,
     "chk_3": true,
-    "route_race_delete": false,
+    "route_cj_delete": true,
     "route_delete_race": false,
-    "next_1": 2,
-    "next_2": 3,
-    "next_3": 1,
     "global_loops": 10,
     "skill_dirs": [
         "right",

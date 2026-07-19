@@ -1060,12 +1060,12 @@ class ImageMatcherMixin:
 
     def should_switch_skillcar_after_cj(self):
         try:
-            return bool(self.var_chk3.get()) and int(self.entry_next3.get()) == 1
+            return bool(self.var_cj_to_delete.get())
         except Exception:
-            return bool(self.config.get("chk_3", True)) and int(self.config.get("next_3", 1)) == 1
+            return bool(self.config.get("route_cj_delete", self.config.get("chk_3", True)))
 
     def switch_to_liked_skillcar_in_car_list(self):
-        self.log("[SkillCar] 超抽后下一步为跑图，准备切换到带 liketag 的刷图车辆。")
+        self.log("[SkillCar] 超抽后下一流程需要技能车，准备切换到带 liketag 的刷图车辆。")
 
         pos_target = None
         for _ in range(30):

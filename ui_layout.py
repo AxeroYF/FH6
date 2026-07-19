@@ -85,8 +85,8 @@ def setup_ui(bot):
 
     bot.var_chk1 = ctk.BooleanVar(value=bot.config["chk_1"])
     bot.var_chk2 = ctk.BooleanVar(value=bot.config["chk_2"])
-    bot.var_chk3 = ctk.BooleanVar(value=bot.config["chk_3"])
-    bot.var_race_to_delete = ctk.BooleanVar(value=bot.config.get("route_race_delete", False))
+    bot.var_chk3 = ctk.BooleanVar(value=bot.config.get("route_cj_delete", bot.config.get("chk_3", True)))
+    bot.var_cj_to_delete = bot.var_chk3
     bot.var_delete_to_race = ctk.BooleanVar(value=bot.config.get("route_delete_race", False))
     bot.var_ai_assist = ctk.BooleanVar(value=bot.config.get("ai_assist", False))
     bot.var_smart_page = ctk.BooleanVar(value=bot.config.get("smart_page", False))
@@ -292,28 +292,18 @@ def setup_ui(bot):
     next_grid.pack(side="left", fill="both", expand=True, padx=(16, 0), pady=2)
     next_row = ctk.CTkFrame(next_grid, fg_color="transparent")
     next_row.pack(anchor="w", expand=True)
-    for idx, (text, var, default, command) in enumerate([
-        ("跑图➡买车", bot.var_chk1, bot.config.get("next_1", 2), lambda: bot.on_flow_route_changed("race_buy")),
-        ("买车➡抽奖", bot.var_chk2, bot.config.get("next_2", 3), bot.save_config),
-        ("抽奖➡跑图", bot.var_chk3, bot.config.get("next_3", 1), bot.save_config),
-        ("跑图➡删车", bot.var_race_to_delete, None, lambda: bot.on_flow_route_changed("race_delete")),
-        ("删车➡跑图", bot.var_delete_to_race, None, bot.save_config),
-    ]):
-        row = ctk.CTkFrame(next_row, fg_color="transparent", width=108, height=38)
+    for text, var, command in [
+        ("跑图➡买车", bot.var_chk1, bot.save_config),
+        ("买车➡抽奖", bot.var_chk2, bot.save_config),
+        ("抽奖➡删车", bot.var_cj_to_delete, bot.save_config),
+        ("删车➡跑图", bot.var_delete_to_race, bot.save_config),
+    ]:
+        row = ctk.CTkFrame(next_row, fg_color="transparent", width=116, height=38)
         row.pack(side="left", padx=(0, 2))
         row.pack_propagate(False)
         ctk.CTkCheckBox(row, text=text, variable=var, command=command, font=font_small).pack(
             fill="both", expand=True, padx=4, pady=5
         )
-        if default is not None:
-            nxt = entry(row, width=42, height=26)
-            nxt.insert(0, str(default))
-            if idx == 0:
-                bot.entry_next1 = nxt
-            elif idx == 1:
-                bot.entry_next2 = nxt
-            elif idx == 2:
-                bot.entry_next3 = nxt
 
     bot.chk1 = bot.var_chk1
     bot.chk2 = bot.var_chk2
@@ -563,8 +553,3 @@ def setup_ui(bot):
         font=font_body,
     )
     bot.compact_log_box.pack(fill="both", expand=True, padx=16, pady=(0, 14))
-
-    bot.entry_next1.bind("<FocusOut>", lambda e: bot.normalize_step_entry(bot.entry_next1, 2))
-    bot.entry_next2.bind("<FocusOut>", lambda e: bot.normalize_step_entry(bot.entry_next2, 3))
-    bot.entry_next3.bind("<FocusOut>", lambda e: bot.normalize_step_entry(bot.entry_next3, 1))
-
