@@ -399,41 +399,47 @@ def logic_race(self, target_count):
         except Exception:
             race_timeout = 300
 
-        while self.is_running:
-            if self.is_paused:
-                if driving_keys_held:
-                    self.hw_key_up("w")
-                    self.hw_key_up("up")
-                    driving_keys_held = False
-                self.check_pause()
-                if self.is_running:
-                    self.hw_key_down("w")
-                    self.hw_key_down("up")
-                    driving_keys_held = True
-                race_start_time = time.time()
-                last_health_check = race_start_time
-                last_result_check = 0.0
-                continue
+        try:
+            while self.is_running:
+                if self.is_paused:
+                    if driving_keys_held:
+                        self.hw_key_up("w")
+                        self.hw_key_up("up")
+                        driving_keys_held = False
+                    self.check_pause()
+                    if self.is_running:
+                        self.hw_key_down("w")
+                        self.hw_key_down("up")
+                        driving_keys_held = True
+                    race_start_time = time.time()
+                    last_health_check = race_start_time
+                    last_result_check = 0.0
+                    continue
 
-            now = time.time()
-            if now - race_start_time > race_timeout:
-                self.log(f"跑图超时（超过 {race_timeout}s），触发重开恢复。", level="WARN")
-                timeout_triggered = True
-                break
-            if now - last_health_check >= 3.0:
-                vram_result = self.check_vramne_during_race()
-                if vram_result is True or vram_result is False:
-                    return False
-                last_health_check = now
-            if now - race_start_time >= 8.0 and now - last_result_check >= 0.6:
-                result_state = _find_challenge_result(self)
-                last_result_check = now
-                if result_state:
+                now = time.time()
+                if now - race_start_time > race_timeout:
+                    self.log(f"跑图超时（超过 {race_timeout}s），触发重开恢复。", level="WARN")
+                    timeout_triggered = True
                     break
-            time.sleep(0.2)
+                if now - last_health_check >= 3.0:
+                    vram_result = self.check_vramne_during_race()
+                    if vram_result is True or vram_result is False:
+                        return False
+                    last_health_check = now
+                if now - race_start_time >= 8.0 and now - last_result_check >= 0.6:
+                    result_state = _find_challenge_result(self)
+                    last_result_check = now
+                    if result_state:
+                        break
+                time.sleep(0.2)
+        finally:
+            # Any exception, stop or early recovery must release the two held
+            # driving keys. Otherwise the background repeat thread can keep the
+            # car accelerating after the race flow has already aborted.
+            self.hw_key_up("w")
+            self.hw_key_up("up")
+            driving_keys_held = False
 
-        self.hw_key_up("w")
-        self.hw_key_up("up")
         if not self.is_running:
             return False
 

@@ -836,7 +836,21 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         if curr_idx == 1:
             return 2 if self.var_chk2.get() else None
         if curr_idx == 2:
-            return 3 if self.var_cj_to_delete.get() else None
+            if not self.var_cj_to_delete.get():
+                return None
+
+            # Vehicle deletion currently supports Mazda only. When the two
+            # routes around deletion are both enabled, Subaru keeps the full
+            # loop intact by treating deletion as an unavailable no-op and
+            # wrapping directly from wheelspin back to race.
+            vehicle_mode = self.get_buy_cj_vehicle_mode()
+            if vehicle_mode == "subaru" and self.var_delete_to_race.get():
+                self.log(
+                    "[流程] 当前为斯巴鲁方案，删除车辆仅支持 Mazda；"
+                    "本轮跳过删车并进入下一轮跑图。"
+                )
+                return 0
+            return 3
         if curr_idx == 3:
             return 0 if self.var_delete_to_race.get() else None
         return None
@@ -1142,7 +1156,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             return None
         manager = getattr(self, "background_mouse", None)
         if manager is None or manager.hwnd != int(hwnd) or not manager.is_valid():
-            manager = WindowMouseManager(hwnd)
+            manager = WindowMouseManager(
+                hwnd,
+                protect_from_physical_cursor=True,
+            )
             self.background_mouse = manager
         return manager
 
@@ -1154,7 +1171,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         if manager is None or manager.hwnd != int(hwnd) or not manager.is_valid():
             if manager is not None:
                 manager.stop()
-            manager = WindowKeyboardManager(hwnd)
+            manager = WindowKeyboardManager(
+                hwnd,
+                resilient_holds=True,
+            )
             manager.start()
             self.background_keyboard = manager
         return manager
@@ -1240,8 +1260,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                     self.log("后台鼠标点击失败：窗口消息未发送。", level="ERROR", frontend=True)
                     return False
                 if move_away:
-                    manager.move(5, 5, use_send=True)
-                    time.sleep(0.12)
+                    manager.stabilize(5, 5, duration=0.12, use_send=True)
                 if confirm_key:
                     self.hw_press(confirm_key, delay=0.1)
                 return True
@@ -2332,7 +2351,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                         self.game_hwnd = hwnd
                         mouse = getattr(self, "background_mouse", None)
                         if mouse is None or mouse.hwnd != int(hwnd) or not mouse.is_valid():
-                            self.background_mouse = WindowMouseManager(hwnd)
+                            self.background_mouse = WindowMouseManager(
+                                hwnd,
+                                protect_from_physical_cursor=True,
+                            )
 
                         capture = getattr(self, "background_capture", None)
                         if capture is None or capture.hwnd != int(hwnd) or not capture.is_valid():
@@ -2346,7 +2368,10 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                         ):
                             if keyboard_manager is not None:
                                 keyboard_manager.stop()
-                            keyboard_manager = WindowKeyboardManager(hwnd)
+                            keyboard_manager = WindowKeyboardManager(
+                                hwnd,
+                                resilient_holds=True,
+                            )
                             keyboard_manager.start()
                             self.background_keyboard = keyboard_manager
                         elif not getattr(keyboard_manager, "_running", False):

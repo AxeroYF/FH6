@@ -59,13 +59,17 @@ def _key_lparam(scan, extended, repeat, previous, transition):
 class WindowKeyboardManager:
     """Send keyboard messages to a game HWND without owning foreground focus."""
 
-    def __init__(self, hwnd):
+    def __init__(self, hwnd, *, resilient_holds=False, fresh_reassert_interval=0.35):
         self.hwnd = int(hwnd)
+        self.resilient_holds = bool(resilient_holds)
+        self.fresh_reassert_interval = max(0.15, float(fresh_reassert_interval))
         self._pressed = set()
         self._repeat_counts = {}
         self._running = False
         self._thread = None
         self._lock = threading.RLock()
+        self._last_fresh_reassert = time.monotonic()
+        self._last_foreground_hwnd = None
 
     def is_valid(self):
         return bool(self.hwnd and win32gui.IsWindow(self.hwnd))
@@ -85,6 +89,8 @@ class WindowKeyboardManager:
         key = str(key).lower()
         with self._lock:
             self._pressed.add(key)
+            self._repeat_counts.pop(key, None)
+            self._last_fresh_reassert = time.monotonic()
             self._send_key(key, down=True, repeat=False)
 
     def key_up(self, key):
@@ -135,6 +141,34 @@ class WindowKeyboardManager:
     def _repeat_loop(self):
         while self._running:
             with self._lock:
+                now = time.monotonic()
+                foreground_changed = False
+                if self.resilient_holds:
+                    try:
+                        foreground_hwnd = int(win32gui.GetForegroundWindow() or 0)
+                    except Exception:
+                        foreground_hwnd = 0
+                    foreground_changed = (
+                        self._last_foreground_hwnd is not None
+                        and foreground_hwnd != self._last_foreground_hwnd
+                    )
+                    self._last_foreground_hwnd = foreground_hwnd
+
+                # Some games discard their internal held-key state when Windows
+                # foreground ownership changes. A WM_KEYDOWN marked as an ordinary
+                # repeat (bit 30 set) may not restore that state. Resilient mode therefore
+                # sends a fresh key-down periodically and immediately after a focus
+                # transition, while retaining the fast repeat stream in between.
+                fresh_reassert = bool(
+                    self.resilient_holds
+                    and self._pressed
+                    and (
+                        foreground_changed
+                        or now - self._last_fresh_reassert >= self.fresh_reassert_interval
+                    )
+                )
                 for key in list(self._pressed):
-                    self._send_key(key, down=True, repeat=True)
+                    self._send_key(key, down=True, repeat=not fresh_reassert)
+                if fresh_reassert:
+                    self._last_fresh_reassert = now
             time.sleep(0.05)
