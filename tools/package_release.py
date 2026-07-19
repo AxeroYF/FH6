@@ -45,22 +45,15 @@ def copy_tree(src: Path, dst: Path) -> None:
 def copy_common_files(target: Path) -> None:
     copy_tree(ROOT / "images", target / "images")
     copy_tree(ROOT / "assets", target / "assets")
-    for name in ("README.md", "README-AI.md", "version.json"):
+    for name in ("version.json",):
         shutil.copy2(ROOT / name, target / name)
 
 
 def copy_current_runtime_state(target: Path) -> None:
-    """Package the user's current settings and the bounded template cache."""
+    """Package the current settings; runtime cache is generated on first launch."""
     config_file = ROOT / "config.json"
     require_file(config_file)
     shutil.copy2(config_file, target / "config.json")
-
-    cache_target = target / "cache"
-    cache_target.mkdir(parents=True, exist_ok=True)
-    for name in ("template_cache.pkl", "template_meta.json"):
-        source = ROOT / "cache" / name
-        require_file(source)
-        shutil.copy2(source, cache_target / name)
 
 
 def clean_path(path: Path) -> None:

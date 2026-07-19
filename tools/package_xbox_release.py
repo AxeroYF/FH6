@@ -42,7 +42,6 @@ def package_xbox(version):
     target.mkdir(parents=True)
     shutil.copy2(XBOX_EXE, target / "FH6Auto-Xbox.exe")
     copy_common_files(target)
-    shutil.copy2(ROOT / "XBOX-TEST.md", target / "XBOX-TEST.md")
     copy_tree(ROOT / "models", target / "models")
     copy_current_runtime_state(target)
     return target

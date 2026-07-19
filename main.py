@@ -2039,6 +2039,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.race_counter = 0
         self.car_counter = 0
         self.cj_counter = 0
+        self.delete_counter = 0
         self.global_loop_current = 0
         self.total_car_bought = 0
         self.total_car_limit = None
