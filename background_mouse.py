@@ -40,10 +40,10 @@ class WindowMouseManager:
                 return
             time.sleep(0.01)
 
-    def _stabilize_position(self, sender, lp, duration):
+    def _stabilize_position(self, sender, lp, duration, *, button_state=0):
         deadline = time.monotonic() + max(0.0, float(duration))
         while time.monotonic() < deadline:
-            sender(self.hwnd, win32con.WM_MOUSEMOVE, 0, lp)
+            sender(self.hwnd, win32con.WM_MOUSEMOVE, int(button_state), lp)
             time.sleep(0.008)
 
     def stabilize(self, x, y, *, duration=0.12, use_send=True):
@@ -84,7 +84,15 @@ class WindowMouseManager:
                 sender(self.hwnd, win32con.WM_MOUSEMOVE, 0, lp)
                 sender(self.hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lp)
                 if self.protect_from_physical_cursor:
-                    self._stabilize_position(sender, lp, max(0.02, float(hold)))
+                    # Keep MK_LBUTTON set on every move between DOWN and UP.
+                    # Sending an unpressed WM_MOUSEMOVE here can make the game
+                    # cancel the click even though the later UP is delivered.
+                    self._stabilize_position(
+                        sender,
+                        lp,
+                        max(0.02, float(hold)),
+                        button_state=win32con.MK_LBUTTON,
+                    )
                 else:
                     time.sleep(max(0.02, float(hold)))
                 # The release message must not retain MK_LBUTTON. Some game UI

@@ -63,6 +63,7 @@ from image_matcher import ImageMatcherMixin
 from background_mouse import WindowMouseManager
 from background_capture import WindowCaptureManager
 from background_keyboard import WindowKeyboardManager
+from mouse_isolation import MouseIsolationOverlay
 from developer_ui_editor import apply_saved_text_overrides, open_developer_text_editor
 from flow_buy import logic_buy_car as flow_logic_buy_car
 from flow_delete import logic_delete_car as flow_logic_delete_car
@@ -278,6 +279,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.background_mouse = None
         self.background_capture = None
         self.background_keyboard = None
+        self.mouse_isolation_overlay = None
+        self._mouse_isolation_dismissed_for_run = False
         self._background_attach_lock = threading.RLock()
         self._background_preload_started = False
         self._background_preload_announced = False
@@ -1149,6 +1152,60 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.save_config()
         state = "已开启，不会移动系统物理鼠标" if enabled else "已关闭，恢复物理鼠标点击"
         self.log(f"[模式] 后台鼠标{state}")
+        if not enabled:
+            self.deactivate_mouse_isolation()
+        elif self.is_running:
+            self._mouse_isolation_dismissed_for_run = False
+            self.activate_mouse_isolation_for_run()
+
+    def activate_mouse_isolation_for_run(self):
+        if (
+            not self.is_running
+            or not self.is_background_mouse_enabled()
+            or self._mouse_isolation_dismissed_for_run
+        ):
+            return False
+
+        hwnd = getattr(self, "game_hwnd", None)
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            return False
+
+        current = getattr(self, "mouse_isolation_overlay", None)
+        if current is not None:
+            if current.game_hwnd == int(hwnd) and current.is_active():
+                return True
+            current.stop()
+
+        def on_dismiss():
+            self._mouse_isolation_dismissed_for_run = True
+            self.log(
+                "[模式] 鼠标隔离已关闭，本次任务可直接操作游戏画面。",
+                frontend=True,
+            )
+
+        overlay = MouseIsolationOverlay(hwnd, on_dismiss=on_dismiss)
+        self.mouse_isolation_overlay = overlay
+        if not overlay.start():
+            self.mouse_isolation_overlay = None
+            detail = getattr(overlay, "_startup_error", None)
+            self.log(
+                f"鼠标隔离启动失败{'：' + detail if detail else ''}。",
+                level="WARN",
+                frontend=True,
+            )
+            return False
+
+        self.log(
+            "[模式] 鼠标隔离已启动，单击游戏画面关闭。",
+            frontend=True,
+        )
+        return True
+
+    def deactivate_mouse_isolation(self):
+        overlay = getattr(self, "mouse_isolation_overlay", None)
+        self.mouse_isolation_overlay = None
+        if overlay is not None:
+            overlay.stop()
 
     def ensure_background_mouse(self):
         hwnd = getattr(self, "game_hwnd", None)
@@ -1923,6 +1980,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             self.entry_delete.insert(0, str(target_count))
 
         self.is_running = True
+        self._mouse_isolation_dismissed_for_run = False
         self.save_config()
         self.reset_run_stats()
         self.delete_counter = 0
@@ -1970,6 +2028,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             self.race_notice_shown = True
 
         self.is_running = True
+        self._mouse_isolation_dismissed_for_run = False
         self.save_config()
 
         self.reset_run_stats()
@@ -2134,6 +2193,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.current_thread.start()
 
     def stop_all(self):
+        self.deactivate_mouse_isolation()
         if not self.is_running:
             return
 
@@ -2392,6 +2452,8 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                     # once as a normal window; do not keep it topmost.
                     if focus_game and self.is_compact_on_run_enabled():
                         self.ui_call(self.restore_compact_window_normal_layer)
+
+                    self.activate_mouse_isolation_for_run()
 
                     # 2. 获取该窗口所在的物理显示器边界
                     MONITOR_DEFAULTTONEAREST = 2
