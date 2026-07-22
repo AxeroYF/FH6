@@ -10,7 +10,7 @@ def run():
     steam_main.flow_logic_race = logic_race_xbox
     app = steam_main.FH_UltimateBot()
     try:
-        app.title("FH6 AUTO v4.3 - Xbox")
+        app.title(f"FH6 AUTO v{steam_main.CURRENT_VERSION} - Xbox")
     except Exception:
         pass
     app.log("[Xbox测试版] 已启用 Xbox 系统共享代码输入兼容层。")

@@ -22,6 +22,7 @@ bot_log.txt
 build/
 dist/
 *.spec
+!FH6Auto-AI.spec
 
 # AI training outputs
 models/
@@ -31,6 +32,14 @@ datasets/
 screenshot/
 *.pt
 *.onnx
+
+# Runtime OCR verifier assets (small and required by both release builds)
+!models/
+models/*
+!models/race_ocr/
+models/race_ocr/*
+!models/race_ocr/recognition.onnx
+!models/race_ocr/recognition.yml
 
 # Runtime caches and temporary folders
 cache/

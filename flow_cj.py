@@ -19,6 +19,78 @@ CJ_VEHICLE_PROFILES = {
     },
 }
 
+
+def is_yolo_target_signal_low(max_conf, thresholds):
+    """Return whether both target-specific signals are below their limits."""
+    return (
+        float(max_conf.get("b600", 0.0) or 0.0)
+        < float(thresholds.get("b600", 0.58))
+        and float(max_conf.get("car", 0.0) or 0.0)
+        < float(thresholds.get("car", 0.60))
+    )
+
+
+def advance_yolo_target_region_state(
+    seen_target_region,
+    post_target_low_pages,
+    stable_target_region,
+    target_low_page,
+    required_low_pages=2,
+):
+    """Track entry into and confirmed exit from a multi-page target block."""
+    if stable_target_region:
+        return True, 0, False
+    if seen_target_region and target_low_page:
+        low_pages = int(post_target_low_pages) + 1
+        return True, low_pages, low_pages >= int(required_low_pages)
+    return bool(seen_target_region), 0, False
+
+
+def choose_yolo_candidate_visual_order(candidates):
+    """Choose the leftmost candidate in the visually topmost grid row."""
+    if not candidates:
+        return None, 0
+    top_y = min(float(candidate["tag"]["cy"]) for candidate in candidates)
+    car_heights = sorted(float(candidate["car"]["h"]) for candidate in candidates)
+    median_car_height = car_heights[len(car_heights) // 2]
+    row_tolerance = max(24.0, median_car_height * 0.30)
+    top_row = [
+        candidate
+        for candidate in candidates
+        if float(candidate["tag"]["cy"]) <= top_y + row_tolerance
+    ]
+    top_row.sort(key=lambda candidate: (candidate["tag"]["cx"], -candidate["score"]))
+    return top_row[0], len(top_row)
+
+
+def analyze_yolo_target_region(self, img, boxes, b600_threshold, min_tag_yellow_ratio):
+    """Measure whether a page is the target-car block and still has a NEW target."""
+    image_h, image_w = img.shape[:2]
+    badges = [b for b in boxes if b["name"] == "b600"]
+    strong_badges = [b for b in badges if float(b["conf"]) >= float(b600_threshold)]
+    valid_tags = []
+    for tag in (b for b in boxes if b["name"] == "new"):
+        if tag["x1"] < image_w * 0.20 or tag["y1"] < image_h * 0.16 or tag["y1"] > image_h * 0.92:
+            continue
+        if self.yolo_yellow_tag_ratio(img, tag) < min_tag_yellow_ratio:
+            continue
+        valid_tags.append(tag)
+
+    new_badge_pair_count = 0
+    for tag in valid_tags:
+        if any(
+            -120 <= badge["cx"] - tag["cx"] <= 80
+            and -12 <= badge["cy"] - tag["cy"] <= 80
+            for badge in badges
+        ):
+            new_badge_pair_count += 1
+
+    return {
+        "strong_badge_count": len(strong_badges),
+        "new_badge_pair_count": new_badge_pair_count,
+        "target_region": len(strong_badges) >= 2,
+    }
+
 def resolve_ai_model_path(self):
     candidates = []
     vehicle_mode = self.get_buy_cj_vehicle_mode()
@@ -72,7 +144,7 @@ def get_yolo_car_select_model(self):
             self.yolo_car_select_model_path = model_path
             vehicle_mode = self.get_buy_cj_vehicle_mode()
             self.log(f"[AISelect] model loaded: {model_path}", level="DEBUG")
-            self.log(f"[AI模型] {vehicle_mode} 选车模型已加载。", frontend=True)
+            self.log(f"[AI模型] {vehicle_mode} 选车模型已加载。", frontend=False)
             return self.yolo_car_select_model
         except Exception as e:
             vehicle_mode = self.get_buy_cj_vehicle_mode()
@@ -200,8 +272,10 @@ def find_yolo_car_candidate(self, img, boxes, min_tag_yellow_ratio=0.18):
         reason = "; ".join(failures[-4:]) if failures else "no candidates"
         return None, reason
 
-    candidates.sort(key=lambda c: (c["tag"]["y1"], c["tag"]["x1"], -c["score"]))
-    return candidates[0], "pass"
+    selected, row_candidate_count = choose_yolo_candidate_visual_order(candidates)
+    selected["candidate_count"] = len(candidates)
+    selected["row_candidate_count"] = row_candidate_count
+    return selected, "pass"
 
 def save_ai_car_debug(self, screen_bgr, status, boxes=None, candidate=None, reason="", click=None, force=False):
     try:
@@ -279,6 +353,12 @@ def save_ai_car_debug(self, screen_bgr, status, boxes=None, candidate=None, reas
 def find_new_consumable_car_with_ai(self, region=None, save_miss=True):
     model = self.get_yolo_car_select_model()
     if model is None:
+        self.ai_car_last_analysis = {
+            "valid": False,
+            "all_low": False,
+            "target_low": False,
+            "reason": "model unavailable",
+        }
         return None
     try:
         screen_bgr = self.capture_region(region)
@@ -295,12 +375,43 @@ def find_new_consumable_car_with_ai(self, region=None, save_miss=True):
                 box = self.yolo_box_to_dict(item, conf_threshold=float(self.config.get("ai_conf", 0.25)))
                 if box:
                     boxes.append(box)
+        max_conf = {
+            name: max((b["conf"] for b in boxes if b["name"] == name), default=0.0)
+            for name in ("new", "b600", "car")
+        }
+        low_thresholds = {
+            "new": float(self.config.get("ai_new_conf_min", 0.25)),
+            "b600": float(self.config.get("ai_b600_conf_min", 0.58)),
+            "car": float(self.config.get("ai_car_conf_min", 0.60)),
+        }
+        min_tag_yellow_ratio = float(self.config.get("ai_min_tag_yellow_ratio", 0.18))
+        target_region = analyze_yolo_target_region(
+            self,
+            screen_bgr,
+            boxes,
+            low_thresholds["b600"],
+            min_tag_yellow_ratio,
+        )
+        self.ai_car_last_analysis = {
+            "valid": True,
+            "all_low": all(max_conf[name] < low_thresholds[name] for name in max_conf),
+            # NEW is a generic label shared by every unused vehicle.  It can
+            # remain near 1.0 on a page containing no target vehicle, so it
+            # must not prevent target-exhaustion detection.  The target model
+            # signals are the B600 badge and the target-car artwork.
+            "target_low": is_yolo_target_signal_low(max_conf, low_thresholds),
+            "max_conf": max_conf,
+            "thresholds": low_thresholds,
+            "box_count": len(boxes),
+            **target_region,
+        }
         candidate, reason = self.find_yolo_car_candidate(
             screen_bgr,
             boxes,
-            min_tag_yellow_ratio=float(self.config.get("ai_min_tag_yellow_ratio", 0.18)),
+            min_tag_yellow_ratio=min_tag_yellow_ratio,
         )
         if not candidate:
+            self.ai_car_last_analysis["reason"] = reason
             counts = (
                 f"new={sum(1 for b in boxes if b['name'] == 'new')} "
                 f"b600={sum(1 for b in boxes if b['name'] == 'b600')} "
@@ -311,7 +422,46 @@ def find_new_consumable_car_with_ai(self, region=None, save_miss=True):
                 self.save_ai_car_debug(screen_bgr, "miss", boxes=boxes, reason=reason, force=True)
             return None
 
+        candidate_thresholds = {
+            "score": float(self.config.get("ai_score_min", 0.68)),
+            "new": float(self.config.get("ai_new_conf_min", 0.25)),
+            "b600": float(self.config.get("ai_b600_conf_min", 0.58)),
+            "car": float(self.config.get("ai_car_conf_min", 0.60)),
+        }
+        candidate_values = {
+            "score": float(candidate["score"]),
+            "new": float(candidate["tag"]["conf"]),
+            "b600": float(candidate["b600"]["conf"]),
+            "car": float(candidate["car"]["conf"]),
+        }
+        rejected = [
+            name for name, value in candidate_values.items()
+            if value < candidate_thresholds[name]
+        ]
+        if rejected:
+            reason = "candidate below acceptance: " + ",".join(
+                f"{name}={candidate_values[name]:.2f}<{candidate_thresholds[name]:.2f}"
+                for name in rejected
+            )
+            self.ai_car_last_analysis["reason"] = reason
+            self.log(f"[AISelect] reject: {reason}", level="DEBUG")
+            if save_miss and self.config.get("ai_auto_capture", False):
+                self.save_ai_car_debug(
+                    screen_bgr,
+                    "miss",
+                    boxes=boxes,
+                    candidate=candidate,
+                    reason=reason,
+                    force=True,
+                )
+            return None
+
         click_local = (int(candidate["car"]["cx"]), int(candidate["car"]["cy"]))
+        self.ai_car_last_analysis.update({
+            "all_low": False,
+            "target_low": False,
+            "reason": "candidate",
+        })
         click_abs = (
             click_local[0] + (region[0] if region else 0),
             click_local[1] + (region[1] if region else 0),
@@ -319,12 +469,21 @@ def find_new_consumable_car_with_ai(self, region=None, save_miss=True):
         self.log(
             f"[AISelect] pass: score={candidate['score']:.3f} "
             f"new={candidate['tag']['conf']:.2f} yellow={candidate['yellow']:.2f} "
-            f"b600={candidate['b600']['conf']:.2f} car={candidate['car']['conf']:.2f}"
+            f"b600={candidate['b600']['conf']:.2f} car={candidate['car']['conf']:.2f} "
+            f"choice=({click_local[0]},{click_local[1]}) "
+            f"candidates={candidate.get('candidate_count', 1)}/"
+            f"toprow={candidate.get('row_candidate_count', 1)}"
         )
         if self.config.get("ai_auto_capture", False):
             self.save_ai_car_debug(screen_bgr, "pass", boxes=boxes, candidate=candidate, reason="pass", click=click_local, force=True)
         return click_abs
     except Exception as e:
+        self.ai_car_last_analysis = {
+            "valid": False,
+            "all_low": False,
+            "target_low": False,
+            "reason": str(e),
+        }
         self.log(f"[AISelect] exception: {e}")
         return None
 
@@ -527,31 +686,121 @@ def select_new_consumable_car_from_list(self):
                 self.hw_press("right", delay=0.06)
                 time.sleep(0.1)
             time.sleep(0.15)
+        # The intermediate pages do not need recognition, but the final jump
+        # must finish animating before the first YOLO capture.
+        time.sleep(float(self.config.get("ai_page_settle_delay", 0.60)))
 
     found_car = False
+    self.cj_vehicle_exhausted = False
+    known_target_pages = getattr(self, "ai_last_target_page_by_vehicle", None)
+    if not isinstance(known_target_pages, dict):
+        known_target_pages = {}
+        self.ai_last_target_page_by_vehicle = known_target_pages
     current_page = jump_pages
+    seen_target_region = False
+    post_target_low_pages = 0
 
     for _ in range(85 - jump_pages):
         if not self.is_running:
             return False
-        # Mazda pages contain many visually identical cards and YOLO may need
-        # several stable frames before all three labels are present.  Keep the
-        # page still long enough to avoid treating an animation-frame miss as
-        # permission to navigate away.
-        detect_timeout = 3.0 if vehicle_mode == "mazda" else 1.5
-        pos_target = self.wait_for_new_consumable_car(timeout=detect_timeout, interval=0.2)
+        # One inference is enough on a settled unrelated page.  Only pages
+        # carrying a target-specific signal receive the multi-frame stability
+        # window, keeping ordinary pagination close to v4.2 speed.
+        fast_scan = bool(
+            vehicle_mode == "mazda" and self.config.get("ai_only", False)
+        )
+        fast_timeout = (
+            float(self.config.get("ai_fast_page_timeout", 0.10))
+            if fast_scan
+            else 1.5
+        )
+        sample_interval = float(self.config.get("ai_page_sample_interval", 0.12))
+        pos_target = self.wait_for_new_consumable_car(
+            timeout=fast_timeout,
+            interval=sample_interval,
+        )
+
+        # On a cold/fast scan, a partial target signal means this may be the
+        # target boundary while one of the three boxes is still settling.  Give
+        # only such pages the remaining stable-observation time instead of
+        # slowing down every unrelated Mazda page.
+        if not pos_target and fast_scan:
+            summary = getattr(self, "ai_car_page_analysis", {}) or {}
+            peak_conf = summary.get("peak_conf", {}) or {}
+            target_thresholds = {
+                "b600": float(self.config.get("ai_b600_conf_min", 0.58)),
+                "car": float(self.config.get("ai_car_conf_min", 0.60)),
+            }
+            has_partial_target_signal = not is_yolo_target_signal_low(
+                peak_conf,
+                target_thresholds,
+            )
+            if has_partial_target_signal or seen_target_region:
+                self.log(
+                    "[AISelect] 当前页接近目标车型区段，执行稳定复核。",
+                    level="DEBUG",
+                )
+                pos_target = self.wait_for_new_consumable_car(
+                    timeout=float(self.config.get("ai_target_confirm_timeout", 0.70)),
+                    interval=sample_interval,
+                )
 
         if pos_target:
             if not self.game_click(pos_target, move_away=False):
                 self.log("目标车辆已识别，但后台点击未成功；停止本轮选车。", level="WARN")
                 return False
             found_car = True
+            known_target_pages[vehicle_mode] = current_page
             if smart_page_enabled:
                 self.memory_car_page = current_page
                 self.log(f"锁定目标车辆！已记录当前页码: {current_page}")
             else:
                 self.log("锁定目标车辆！")
             break
+
+        summary = getattr(self, "ai_car_page_analysis", {}) or {}
+        samples = int(summary.get("samples", 0) or 0)
+        target_region_ratio = float(summary.get("target_region_ratio", 0.0) or 0.0)
+        stable_target_region = bool(samples >= 2 and target_region_ratio >= 0.67)
+        page_exhausted = bool(getattr(self, "ai_car_page_exhausted", False))
+        target_low_page = bool(page_exhausted and not stable_target_region)
+
+        # A vehicle model can span several pages.  A target page with no NEW
+        # card means only that this page is exhausted; continue until the
+        # target block has disappeared for two stable pages.  This prevents
+        # the first partial target page from terminating a cold-start scan.
+        had_seen_target_region = seen_target_region
+        seen_target_region, post_target_low_pages, target_block_finished = (
+            advance_yolo_target_region_state(
+                seen_target_region,
+                post_target_low_pages,
+                stable_target_region,
+                target_low_page,
+            )
+        )
+        if stable_target_region and not had_seen_target_region:
+            self.log(
+                "[AISelect] 已进入目标车型区段，继续检查后续页面。",
+                level="DEBUG",
+            )
+        elif had_seen_target_region and target_low_page:
+            self.log(
+                f"[AISelect] 目标车型区段后稳定空页 {post_target_low_pages}/2。",
+                level="DEBUG",
+            )
+
+        if target_block_finished:
+            maxima = summary.get("max_conf", {})
+            self.cj_vehicle_exhausted = True
+            self.log(
+                "[AISelect] 已遍历目标车型区段且连续页面没有目标信号，"
+                "判定没有可用的全新目标车辆："
+                f"NEW={float(maxima.get('new', 0.0)):.2f} "
+                f"S1={float(maxima.get('b600', 0.0)):.2f} "
+                f"CAR={float(maxima.get('car', 0.0)):.2f}。",
+                level="WARN",
+            )
+            return False
 
         self.log(
             f"[AISelect] 当前页稳定检测后仍未命中，执行翻页 {current_page + 1} -> {current_page + 2}",
@@ -560,13 +809,19 @@ def select_new_consumable_car_from_list(self):
         for _ in range(4):
             self.hw_press("right", delay=0.06)
             time.sleep(0.1)
-        # Background key messages are asynchronous.  Wait for the grid to
-        # finish consuming the entire navigation burst before capturing the
-        # next frame, otherwise an old-page detection can race queued RIGHTs.
-        time.sleep(0.9)
+        # v4.2 used 0.4 s here.  Keep a small extra margin for asynchronous
+        # background messages while avoiding v4.3's former 0.9 s fixed wait.
+        time.sleep(float(self.config.get("ai_page_settle_delay", 0.60)))
         current_page += 1
 
     if not found_car:
+        if bool(self.config.get("ai_only", False)):
+            self.cj_vehicle_exhausted = True
+            self.log(
+                "[AISelect] 已扫描完整车辆列表，判定没有可用的全新目标车辆。",
+                level="WARN",
+            )
+            return False
         self.log("列表中未找到目标车辆。")
         if smart_page_enabled:
             self.log("已重置智能记忆页码。")
@@ -583,6 +838,7 @@ def logic_super_wheelspin(self, target_count):
     # 固定本轮 CJ 使用的车辆方案，确保选车、YOLO 模型和技能树路径一致。
     # get_buy_cj_vehicle_mode 会优先读取流程启动时锁定的 active_buy_cj_vehicle。
     vehicle_mode = self.get_buy_cj_vehicle_mode()
+    self.cj_vehicle_exhausted = False
 
     self.update_running_ui("超级抽奖", self.cj_counter, target_count)
     # 【新增】：初始化记忆页码
@@ -631,6 +887,16 @@ def logic_super_wheelspin(self, target_count):
         if not self.enter_design_paint_choose_car():
             return False
         if not self.select_new_consumable_car_from_list():
+            if getattr(self, "cj_vehicle_exhausted", False):
+                self.pipeline_step_exhausted = {
+                    "step": "cj",
+                    "reason": "YOLO 已确认当前整页没有合格的全新目标车辆",
+                }
+                self.log(
+                    f"[流程] 可用新车已耗尽，超级抽奖提前结束；本轮实际完成 "
+                    f"{self.cj_counter}/{target_count}。"
+                )
+                return True
             return False  #这一步只会选中而不会点击
         time.sleep(1.0)
         self.log("准备上车")

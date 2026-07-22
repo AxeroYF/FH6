@@ -410,13 +410,16 @@ def _delete_one_mazda(self, target_count):
         return False
     self.delete_counter = next_count
     self.update_delete_progress(self.delete_counter, target_count)
-    self.log(f"[删车执行] 第 {self.delete_counter}/{target_count} 辆删除完成。")
+    self.log(f"[进度] 删除车辆 {self.delete_counter}/{target_count} 完成")
     return True
 
 
-def _return_to_freeroam_after_delete(self):
+def _return_to_freeroam_after_delete(self, *, completed=True):
     """Mirror CJ's no-next-step ending: two Esc presses, then return success."""
-    self.log("[删车执行] 目标数量已全部完成，正在返回漫游模式。")
+    if completed:
+        self.log("[删车执行] 目标数量已全部完成，正在返回漫游模式。")
+    else:
+        self.log("[删车执行] 可删除车辆已经耗尽，正在退出删车界面。")
     if not self.is_running:
         return False
     press_with_pause(self, "esc", after=0.7)
@@ -431,6 +434,7 @@ def logic_delete_car(self, target_count):
     """Validate skillcar state and apply the four Mazda deletion filters."""
     target_count = max(1, int(target_count))
     self.delete_counter = int(getattr(self, "delete_counter", 0) or 0)
+    self.delete_vehicle_exhausted = False
     self.update_delete_progress(self.delete_counter, target_count)
     if self.delete_counter >= target_count:
         return True
@@ -447,7 +451,16 @@ def logic_delete_car(self, target_count):
         return False
 
     if not _verify_mazda_808_delete_candidates(self):
-        return False
+        self.delete_vehicle_exhausted = True
+        self.pipeline_step_exhausted = {
+            "step": "delete",
+            "reason": "筛选结果中已没有可删除的 Mazda 808",
+        }
+        self.log(
+            f"[流程] 可删除车辆已耗尽，删车提前结束；本轮实际完成 "
+            f"{self.delete_counter}/{target_count}。"
+        )
+        return _return_to_freeroam_after_delete(self, completed=False)
 
     first_delete_this_attempt = True
     while self.delete_counter < target_count:
@@ -455,7 +468,16 @@ def logic_delete_car(self, target_count):
         # before every subsequent destructive action so an exhausted/changed
         # list can never receive the deletion key sequence.
         if not first_delete_this_attempt and not _verify_mazda_808_delete_candidates(self):
-            return False
+            self.delete_vehicle_exhausted = True
+            self.pipeline_step_exhausted = {
+                "step": "delete",
+                "reason": "筛选结果中的可删除 Mazda 808 已全部处理",
+            }
+            self.log(
+                f"[流程] 可删除车辆已耗尽，删车提前结束；本轮实际完成 "
+                f"{self.delete_counter}/{target_count}。"
+            )
+            return _return_to_freeroam_after_delete(self, completed=False)
         if not _delete_one_mazda(self, target_count):
             return False
         first_delete_this_attempt = False

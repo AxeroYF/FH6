@@ -20,6 +20,9 @@ DEFAULT_RECOGNITION_PROFILES = {
     "race.challenge_success": {
         "threshold": 0.68,
         "decision_margin": 0.10,
+        "ocr_trigger_score": 0.45,
+        "ocr_interval": 0.8,
+        "ambiguous_timeout": 8.0,
         "interval": 0.60,
         "fast_mode": False,
         "crop_box": [0.070, 0.908, 0.112, 0.950],

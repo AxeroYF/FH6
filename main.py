@@ -323,6 +323,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
         self.total_car_bought = 0
         self.total_car_limit = None
         self.stop_after_cj_due_buy_limit = False
+        self.pipeline_step_exhausted = None
         self.init_match_calibration()
 
         self.init_regions()
@@ -1463,21 +1464,18 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
     def should_show_frontend_log(self, message, level="INFO"):
         """Keep the UI log concise while diagnostic mode retains every message."""
         text = str(message or "")
+        if str(level or "INFO").upper() == "ERROR":
+            return True
+
         frontend_prefixes = (
             "免责声明：",
-            "默认刷图车辆：",
-            "蓝图代码可自行修改",
-            "游戏设置为",
-            "【设置】",
-            "大部分以图像识别作为引导",
             "诊断记录已",
             "买车/超抽车辆方案已切换为：",
             "技能树路径已自动切换为：",
-            "[AI模型]",
-            "[模式]",
-            "[流程]",
+            "[模式] 本次任务车辆：",
             "[进度]",
-            "[大循环]",
+            "[流程] 开始删除车辆任务",
+            "[流程] 删除车辆任务结束",
             "已启用 CR 买车限制：",
             "未启用 CR 买车限制",
             "CR 买车上限已触发",
@@ -1496,7 +1494,19 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
             "!!! 检测到 VRAMNE.png",
             "!!! 严重警告:",
         )
-        return text.startswith(frontend_prefixes)
+        if text.startswith(frontend_prefixes):
+            return True
+
+        # These are user-relevant outcomes embedded in otherwise diagnostic
+        # flow messages.  Navigation, recognition and key-press details stay
+        # in the diagnostic report only.
+        frontend_markers = (
+            "可用目标已耗尽",
+            "未完成，准备恢复后重试",
+            "循环跑图已停止：当前挑战分享码不可用",
+            "模板和 OCR 无法可靠区分结果",
+        )
+        return any(marker in text for marker in frontend_markers)
 
     def capture_diagnostic_snapshot(self, name, *, region=None, image_bgr=None, reason=None, level="WARN", meta=None, dedupe_key=None):
         trace = getattr(self, "diagnostic_trace", None)
@@ -2096,6 +2106,7 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                     "delete": "删除车辆",
                 }[step_name]
                 success = False
+                self.pipeline_step_exhausted = None
                 self.log(
                     f"[流程] 开始 {step_label}（大循环 {self.global_loop_current}/{total_loops}）"
                 )
@@ -2152,7 +2163,15 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                         "cj": self.cj_counter,
                         "delete": self.delete_counter,
                     }[step_name]
-                    self.log(f"[流程] {step_label}结束，本轮完成 {completed} 次")
+                    exhausted = getattr(self, "pipeline_step_exhausted", None)
+                    if isinstance(exhausted, dict) and exhausted.get("step") == step_name:
+                        self.log(
+                            f"[流程] {step_label}可用目标已耗尽，本轮实际完成 {completed} 次；"
+                            "不再恢复或重试当前模块。"
+                        )
+                    else:
+                        exhausted = None
+                        self.log(f"[流程] {step_label}结束，本轮完成 {completed} 次")
 
                 if step_name == "cj" and getattr(self, "stop_after_cj_due_buy_limit", False):
                     self.log("CR 买车上限已触发，本轮超抽完成后停止整个循环，避免浪费新车。")
@@ -2161,7 +2180,18 @@ class FH_UltimateBot(ImageMatcherMixin, ctk.CTk):
                 # ====== 核心流转与无限循环逻辑 ======
                 next_idx = self.resolve_pipeline_next_index(curr_idx)
                 if next_idx is None:
+                    if exhausted:
+                        self.log(f"[流程] {step_label}没有启用后续路线，当前循环正常结束。")
                     break
+
+                if exhausted:
+                    next_label = {
+                        0: "循环跑图",
+                        1: "批量买车",
+                        2: "超级抽奖",
+                        3: "删除车辆",
+                    }[next_idx]
+                    self.log(f"[流程] 按照流程设置跳过重试，进入下一环节：{next_label}。")
 
                 if step_name == "buy" and getattr(self, "stop_after_cj_due_buy_limit", False):
                     next_idx = 2

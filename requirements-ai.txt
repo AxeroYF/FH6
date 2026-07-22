@@ -2,3 +2,4 @@ ultralytics
 torch
 torchvision
 torchaudio
+onnxruntime

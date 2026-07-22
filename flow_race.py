@@ -1,3 +1,4 @@
+import threading
 import time
 
 from flow_common import (
@@ -7,6 +8,7 @@ from flow_common import (
     wait_image_or_log,
 )
 from recognition_config import get_recognition_profile
+from race_result_ocr import ChallengeResultOCR
 
 
 def _interruptible_wait(self, seconds):
@@ -16,6 +18,108 @@ def _interruptible_wait(self, seconds):
             self.check_pause()
         time.sleep(min(0.2, max(0.01, deadline - time.time())))
     return self.is_running
+
+
+def _get_challenge_result_ocr(self):
+    engine = getattr(self, "challenge_result_ocr", None)
+    if engine is None:
+        engine = ChallengeResultOCR(log_func=self.log)
+        self.challenge_result_ocr = engine
+    return engine
+
+
+def _preload_challenge_result_ocr(self):
+    if getattr(self, "challenge_result_ocr_preload_started", False):
+        return
+    self.challenge_result_ocr_preload_started = True
+    threading.Thread(
+        target=_get_challenge_result_ocr(self).ensure_loaded,
+        name="ChallengeResultOCRPreload",
+        daemon=True,
+    ).start()
+
+
+def _reset_challenge_result_ocr_state(self):
+    self.challenge_result_ambiguous_since = None
+    self.challenge_result_ambiguous_last_seen = 0.0
+    self.challenge_result_ambiguous_hits = 0
+    self.challenge_result_ocr_last_check = 0.0
+    self.challenge_result_ocr_candidate = None
+    self.challenge_result_ocr_streak = 0
+
+
+def _verify_challenge_result_with_ocr(self, success_score, failed_score):
+    profile = get_recognition_profile(self, "race.challenge_success")
+    trigger_score = float(profile.get("ocr_trigger_score", 0.45))
+    now = time.time()
+    template_evidence = max(success_score, failed_score) >= trigger_score
+    if not template_evidence:
+        last_seen = float(getattr(self, "challenge_result_ambiguous_last_seen", 0.0) or 0.0)
+        if last_seen and now - last_seen > 1.5:
+            _reset_challenge_result_ocr_state(self)
+        return None
+    ocr_evidence = False
+
+    ocr_interval = float(profile.get("ocr_interval", 0.8))
+    last_ocr = float(getattr(self, "challenge_result_ocr_last_check", 0.0) or 0.0)
+    if now - last_ocr >= ocr_interval:
+        self.challenge_result_ocr_last_check = now
+        screen_bgr = self.capture_region(self.regions["全界面"])
+        result = _get_challenge_result_ocr(self).recognize(screen_bgr)
+        status = result.get("status")
+        recognized_text = str(result.get("text", "") or "")
+        ocr_evidence = bool(status or "挑战" in recognized_text)
+        self.log(
+            f"[ChallengeOCR] text={recognized_text!r} "
+            f"confidence={float(result.get('confidence', 0.0)):.3f} "
+            f"status={status or 'unknown'}",
+            level="DEBUG",
+            frontend=False,
+        )
+        if status and status == getattr(self, "challenge_result_ocr_candidate", None):
+            self.challenge_result_ocr_streak = int(
+                getattr(self, "challenge_result_ocr_streak", 0) or 0
+            ) + 1
+        elif status:
+            self.challenge_result_ocr_candidate = status
+            self.challenge_result_ocr_streak = 1
+        else:
+            self.challenge_result_ocr_candidate = None
+            self.challenge_result_ocr_streak = 0
+
+        if status and self.challenge_result_ocr_streak >= 2:
+            self.log(
+                f"[ChallengeOCR] 连续两帧复核为 {status}。",
+                level="DEBUG",
+                frontend=False,
+            )
+            _reset_challenge_result_ocr_state(self)
+            return status
+
+    has_result_evidence = bool(template_evidence or ocr_evidence)
+    last_seen = float(getattr(self, "challenge_result_ambiguous_last_seen", 0.0) or 0.0)
+    if has_result_evidence:
+        if not last_seen or now - last_seen > 1.5:
+            # Keep a valid OCR candidate from the current check while resetting
+            # only the ambiguity timer fields.
+            self.challenge_result_ambiguous_since = now
+            self.challenge_result_ambiguous_hits = 0
+        self.challenge_result_ambiguous_last_seen = now
+        self.challenge_result_ambiguous_hits = int(
+            getattr(self, "challenge_result_ambiguous_hits", 0) or 0
+        ) + 1
+    elif last_seen and now - last_seen > 1.5:
+        _reset_challenge_result_ocr_state(self)
+
+    ambiguous_since = getattr(self, "challenge_result_ambiguous_since", None)
+    ambiguous_timeout = float(profile.get("ambiguous_timeout", 8.0))
+    if (
+        ambiguous_since is not None
+        and self.challenge_result_ambiguous_hits >= 3
+        and now - float(ambiguous_since) >= ambiguous_timeout
+    ):
+        return "ambiguous"
+    return None
 
 
 def _find_challenge_reference(self, profile_key, reference_name, region=None):
@@ -94,13 +198,14 @@ def _score_challenge_result_once(self):
     return None, success_score, failed_score
 
 
-def _find_challenge_result(self):
+def _find_challenge_result(self, *, allow_ocr_watchdog=True):
     candidate, success_score, failed_score = _score_challenge_result_once(self)
     if candidate == "success":
         self.log(
             f"[ChallengeResultScore] success={success_score:.3f} "
             f"failed={failed_score:.3f} -> success"
         )
+        _reset_challenge_result_ocr_state(self)
         return "success"
 
     if candidate == "failed":
@@ -115,14 +220,18 @@ def _find_challenge_result(self):
         confirmed, confirm_success, confirm_failed = _score_challenge_result_once(self)
         if confirmed == "success":
             self.log("失败候选复核为挑战完成，已阻止错误按 Enter。", level="WARN")
+            _reset_challenge_result_ocr_state(self)
             return "success"
         if confirmed == "failed":
             self.log(
                 f"[ChallengeResultScore] confirm success={confirm_success:.3f} "
                 f"failed={confirm_failed:.3f} -> failed"
             )
+            _reset_challenge_result_ocr_state(self)
             return "failed"
         self.log("挑战失败候选未通过二次确认，继续等待结算稳定。", level="DEBUG")
+    if allow_ocr_watchdog:
+        return _verify_challenge_result_with_ocr(self, success_score, failed_score)
     return None
 
 
@@ -130,7 +239,7 @@ def _confirm_challenge_action(self, state, key):
     self.hw_press(key)
     if not _interruptible_wait(self, 1.0):
         return False
-    if _find_challenge_result(self) == state:
+    if _find_challenge_result(self, allow_ocr_watchdog=False) == state:
         self.log(f"结算按钮仍可见，重按 {key.upper()} 确认。", level="WARN")
         self.hw_press(key)
         return _interruptible_wait(self, 0.8)
@@ -373,6 +482,7 @@ def logic_race(self, target_count):
     if not _navigate_to_eventlab_challenge(self, navigation_state):
         return False
     self.log("新版挑战入口完成，开始循环跑图。")
+    _preload_challenge_result_ocr(self)
 
     while self.race_counter < target_count:
         if not self.is_running:
@@ -393,6 +503,7 @@ def logic_race(self, target_count):
         last_health_check = race_start_time
         last_result_check = 0.0
         result_state = None
+        _reset_challenge_result_ocr_state(self)
         timeout_triggered = False
         try:
             race_timeout = max(60, int(self.config.get("race_timeout", 300)))
@@ -461,12 +572,27 @@ def logic_race(self, target_count):
             self.log("超时后未找到重开赛事按钮，交给全局恢复处理。", level="WARN")
             return False
 
+        if result_state == "ambiguous":
+            if hasattr(self, "capture_diagnostic_snapshot"):
+                self.capture_diagnostic_snapshot(
+                    "ambiguous_challenge_result",
+                    region=self.regions["全界面"],
+                    reason="结算界面模板与 OCR 连续无法区分挑战完成/失败",
+                    level="WARN",
+                    dedupe_key=f"race_result_ambiguous:{self.race_counter}",
+                )
+            self.log(
+                "[比赛] 已检测到结算界面，但模板和 OCR 无法可靠区分结果；进入恢复流程。",
+                level="WARN",
+            )
+            return False
+
         if result_state == "failed":
             self.race_counter += 1
             self.update_running_ui("循环跑图", self.race_counter, target_count)
             self.log(f"[进度] 跑图 {self.race_counter}/{target_count} 完成")
             if is_last:
-                self.log("最后一轮识别到挑战失败，本轮计数并按 ESC 退出循环。", level="WARN")
+                self.log("[比赛] 最后一轮挑战失败，本轮计数并按 ESC 退出循环。", level="WARN")
                 if not _confirm_challenge_action(self, "failed", "esc"):
                     return False
                 _handle_optional_challenge_rating(self, continuation_text="退出循环")
@@ -474,7 +600,7 @@ def logic_race(self, target_count):
                     return False
                 continue
 
-            self.log("识别到挑战失败，本轮计数并按 Enter 进入下一轮。", level="WARN")
+            self.log("[比赛] 挑战失败，本轮计数并按 Enter 进入下一轮。", level="WARN")
             if not _confirm_challenge_action(self, "failed", "enter"):
                 return False
             _handle_optional_challenge_rating(self)
@@ -485,7 +611,7 @@ def logic_race(self, target_count):
             return False
 
         action_key = "enter" if is_last else "esc"
-        self.log(f"识别到挑战完成，按 {action_key.upper()} {'继续退出' if is_last else '重试'}。")
+        self.log(f"[比赛] 挑战完成，按 {action_key.upper()} {'继续退出' if is_last else '重试'}。")
         if not _confirm_challenge_action(self, "success", action_key):
             return False
         self.race_counter += 1

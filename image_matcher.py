@@ -1870,17 +1870,86 @@ class ImageMatcherMixin:
             # caller enqueue another four RIGHT presses and skip the page just
             # as the model finishes recognizing the target.
             ai_deadline = time.time() + max(0.1, float(timeout))
+            ai_samples = 0
+            ai_low_samples = 0
+            ai_low_streak = 0
+            ai_target_region_samples = 0
+            ai_target_region_streak = 0
+            ai_new_badge_pair_samples = 0
+            ai_latest_conf = {"new": 0.0, "b600": 0.0, "car": 0.0}
+            ai_peak_conf = {"new": 0.0, "b600": 0.0, "car": 0.0}
+            self.ai_car_page_exhausted = False
+            self.ai_car_page_target_region_exhausted = False
+            self.ai_car_page_analysis = {}
             while self.is_running:
                 pos = self.find_new_consumable_car_with_ai(
                     region=self.regions["全界面"],
                     save_miss=save_debug,
                 )
                 if pos:
+                    self.ai_car_page_exhausted = False
                     return pos
+                analysis = getattr(self, "ai_car_last_analysis", {}) or {}
+                if analysis.get("valid", False):
+                    ai_samples += 1
+                    frame_max = analysis.get("max_conf", {}) or {}
+                    ai_latest_conf = {
+                        name: float(frame_max.get(name, 0.0) or 0.0)
+                        for name in ai_latest_conf
+                    }
+                    ai_peak_conf = {
+                        name: max(ai_peak_conf[name], ai_latest_conf[name])
+                        for name in ai_peak_conf
+                    }
+                    if analysis.get("target_low", False):
+                        ai_low_samples += 1
+                        ai_low_streak += 1
+                    else:
+                        ai_low_streak = 0
+                    if analysis.get("target_region", False):
+                        ai_target_region_samples += 1
+                        ai_target_region_streak += 1
+                    else:
+                        ai_target_region_streak = 0
+                    if int(analysis.get("new_badge_pair_count", 0) or 0) > 0:
+                        ai_new_badge_pair_samples += 1
                 if not ai_only or time.time() >= ai_deadline:
                     break
                 time.sleep(max(0.05, float(interval)))
             if ai_only:
+                low_ratio = ai_low_samples / max(1, ai_samples)
+                target_region_ratio = ai_target_region_samples / max(1, ai_samples)
+                self.ai_car_page_target_region_exhausted = bool(
+                    ai_samples >= 2
+                    and ai_target_region_streak >= 2
+                    and target_region_ratio >= 0.67
+                    and ai_new_badge_pair_samples == 0
+                )
+                target_low_exhausted = bool(
+                    ai_samples >= 2 and ai_low_streak >= 2 and low_ratio >= 0.67
+                )
+                self.ai_car_page_exhausted = bool(
+                    self.ai_car_page_target_region_exhausted or target_low_exhausted
+                )
+                self.ai_car_page_analysis = {
+                    "samples": ai_samples,
+                    "low_samples": ai_low_samples,
+                    "low_ratio": low_ratio,
+                    "max_conf": ai_latest_conf,
+                    "peak_conf": ai_peak_conf,
+                    "target_region_samples": ai_target_region_samples,
+                    "target_region_ratio": target_region_ratio,
+                    "new_badge_pair_samples": ai_new_badge_pair_samples,
+                }
+                if self.ai_car_page_exhausted:
+                    self.log(
+                        f"[AISelect] page exhausted: low={ai_low_samples}/{ai_samples} "
+                        f"region={ai_target_region_samples}/{ai_samples} "
+                        f"new_pair={ai_new_badge_pair_samples} "
+                        f"new={ai_latest_conf['new']:.2f} b600={ai_latest_conf['b600']:.2f} "
+                        f"car={ai_latest_conf['car']:.2f}",
+                        level="DEBUG",
+                    )
                 return None
 
         start = time.time()
