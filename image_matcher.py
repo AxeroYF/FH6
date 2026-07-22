@@ -1857,7 +1857,7 @@ class ImageMatcherMixin:
             self.log(f"find_new_consumable_car_template 异常: {e}")
             return None
 
-    def wait_for_new_consumable_car(self, timeout=3, interval=0.2):
+    def wait_for_new_consumable_car(self, timeout=3, interval=0.2, min_ai_samples=1):
         ai_enabled = self.config.get("ai_assist", False)
         ai_first = ai_enabled and self.config.get("ai_prefer", False)
         ai_only = ai_enabled and self.config.get("ai_only", False)
@@ -1870,6 +1870,8 @@ class ImageMatcherMixin:
             # caller enqueue another four RIGHT presses and skip the page just
             # as the model finishes recognizing the target.
             ai_deadline = time.time() + max(0.1, float(timeout))
+            required_ai_samples = max(1, int(min_ai_samples or 1))
+            ai_attempts = 0
             ai_samples = 0
             ai_low_samples = 0
             ai_low_streak = 0
@@ -1882,6 +1884,7 @@ class ImageMatcherMixin:
             self.ai_car_page_target_region_exhausted = False
             self.ai_car_page_analysis = {}
             while self.is_running:
+                ai_attempts += 1
                 pos = self.find_new_consumable_car_with_ai(
                     region=self.regions["全界面"],
                     save_miss=save_debug,
@@ -1913,8 +1916,15 @@ class ImageMatcherMixin:
                         ai_target_region_streak = 0
                     if int(analysis.get("new_badge_pair_count", 0) or 0) > 0:
                         ai_new_badge_pair_samples += 1
-                if not ai_only or time.time() >= ai_deadline:
+                if not ai_only:
                     break
+                if time.time() >= ai_deadline:
+                    # CPU-only release builds can spend longer than the
+                    # nominal timeout on a single inference.  Stability is a
+                    # sample-count requirement, so do not end a confirmation
+                    # window after only one valid frame.
+                    if ai_samples >= required_ai_samples or ai_attempts >= required_ai_samples + 1:
+                        break
                 time.sleep(max(0.05, float(interval)))
             if ai_only:
                 low_ratio = ai_low_samples / max(1, ai_samples)
@@ -1933,6 +1943,8 @@ class ImageMatcherMixin:
                 )
                 self.ai_car_page_analysis = {
                     "samples": ai_samples,
+                    "attempts": ai_attempts,
+                    "required_samples": required_ai_samples,
                     "low_samples": ai_low_samples,
                     "low_ratio": low_ratio,
                     "max_conf": ai_latest_conf,

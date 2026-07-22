@@ -47,20 +47,47 @@ def advance_yolo_target_region_state(
 
 
 def choose_yolo_candidate_visual_order(candidates):
-    """Choose the leftmost candidate in the visually topmost grid row."""
+    """Choose the topmost candidate in the visually leftmost grid column."""
     if not candidates:
         return None, 0
-    top_y = min(float(candidate["tag"]["cy"]) for candidate in candidates)
-    car_heights = sorted(float(candidate["car"]["h"]) for candidate in candidates)
-    median_car_height = car_heights[len(car_heights) // 2]
-    row_tolerance = max(24.0, median_car_height * 0.30)
-    top_row = [
+    left_x = min(float(candidate["tag"]["cx"]) for candidate in candidates)
+    car_widths = sorted(float(candidate["car"]["w"]) for candidate in candidates)
+    median_car_width = car_widths[len(car_widths) // 2]
+    column_tolerance = max(32.0, median_car_width * 0.30)
+    left_column = [
         candidate
         for candidate in candidates
-        if float(candidate["tag"]["cy"]) <= top_y + row_tolerance
+        if float(candidate["tag"]["cx"]) <= left_x + column_tolerance
     ]
-    top_row.sort(key=lambda candidate: (candidate["tag"]["cx"], -candidate["score"]))
-    return top_row[0], len(top_row)
+    left_column.sort(
+        key=lambda candidate: (
+            candidate["tag"]["cy"],
+            candidate["tag"]["cx"],
+            -candidate["score"],
+        )
+    )
+    return left_column[0], len(left_column)
+
+
+def evaluate_yolo_candidate(candidate, thresholds):
+    """Return acceptance plus a diagnostic reason for one linked candidate."""
+    values = {
+        "score": float(candidate["score"]),
+        "new": float(candidate["tag"]["conf"]),
+        "b600": float(candidate["b600"]["conf"]),
+        "car": float(candidate["car"]["conf"]),
+    }
+    rejected = [
+        name for name, value in values.items()
+        if value < float(thresholds[name])
+    ]
+    if not rejected:
+        return True, "pass"
+    reason = "candidate below acceptance: " + ",".join(
+        f"{name}={values[name]:.2f}<{float(thresholds[name]):.2f}"
+        for name in rejected
+    )
+    return False, reason
 
 
 def analyze_yolo_target_region(self, img, boxes, b600_threshold, min_tag_yellow_ratio):
@@ -272,9 +299,27 @@ def find_yolo_car_candidate(self, img, boxes, min_tag_yellow_ratio=0.18):
         reason = "; ".join(failures[-4:]) if failures else "no candidates"
         return None, reason
 
-    selected, row_candidate_count = choose_yolo_candidate_visual_order(candidates)
-    selected["candidate_count"] = len(candidates)
-    selected["row_candidate_count"] = row_candidate_count
+    config = getattr(self, "config", {}) or {}
+    thresholds = {
+        "score": float(config.get("ai_score_min", 0.68)),
+        "new": float(config.get("ai_new_conf_min", 0.25)),
+        "b600": float(config.get("ai_b600_conf_min", 0.58)),
+        "car": float(config.get("ai_car_conf_min", 0.60)),
+    }
+    accepted = []
+    for candidate in candidates:
+        is_accepted, rejection_reason = evaluate_yolo_candidate(candidate, thresholds)
+        if is_accepted:
+            accepted.append(candidate)
+        else:
+            failures.append(rejection_reason)
+    if not accepted:
+        return None, "; ".join(failures[-4:])
+
+    selected, column_candidate_count = choose_yolo_candidate_visual_order(accepted)
+    selected["candidate_count"] = len(accepted)
+    selected["linked_candidate_count"] = len(candidates)
+    selected["column_candidate_count"] = column_candidate_count
     return selected, "pass"
 
 def save_ai_car_debug(self, screen_bgr, status, boxes=None, candidate=None, reason="", click=None, force=False):
@@ -422,40 +467,6 @@ def find_new_consumable_car_with_ai(self, region=None, save_miss=True):
                 self.save_ai_car_debug(screen_bgr, "miss", boxes=boxes, reason=reason, force=True)
             return None
 
-        candidate_thresholds = {
-            "score": float(self.config.get("ai_score_min", 0.68)),
-            "new": float(self.config.get("ai_new_conf_min", 0.25)),
-            "b600": float(self.config.get("ai_b600_conf_min", 0.58)),
-            "car": float(self.config.get("ai_car_conf_min", 0.60)),
-        }
-        candidate_values = {
-            "score": float(candidate["score"]),
-            "new": float(candidate["tag"]["conf"]),
-            "b600": float(candidate["b600"]["conf"]),
-            "car": float(candidate["car"]["conf"]),
-        }
-        rejected = [
-            name for name, value in candidate_values.items()
-            if value < candidate_thresholds[name]
-        ]
-        if rejected:
-            reason = "candidate below acceptance: " + ",".join(
-                f"{name}={candidate_values[name]:.2f}<{candidate_thresholds[name]:.2f}"
-                for name in rejected
-            )
-            self.ai_car_last_analysis["reason"] = reason
-            self.log(f"[AISelect] reject: {reason}", level="DEBUG")
-            if save_miss and self.config.get("ai_auto_capture", False):
-                self.save_ai_car_debug(
-                    screen_bgr,
-                    "miss",
-                    boxes=boxes,
-                    candidate=candidate,
-                    reason=reason,
-                    force=True,
-                )
-            return None
-
         click_local = (int(candidate["car"]["cx"]), int(candidate["car"]["cy"]))
         self.ai_car_last_analysis.update({
             "all_low": False,
@@ -472,7 +483,8 @@ def find_new_consumable_car_with_ai(self, region=None, save_miss=True):
             f"b600={candidate['b600']['conf']:.2f} car={candidate['car']['conf']:.2f} "
             f"choice=({click_local[0]},{click_local[1]}) "
             f"candidates={candidate.get('candidate_count', 1)}/"
-            f"toprow={candidate.get('row_candidate_count', 1)}"
+            f"linked={candidate.get('linked_candidate_count', 1)}/"
+            f"leftcol={candidate.get('column_candidate_count', 1)}"
         )
         if self.config.get("ai_auto_capture", False):
             self.save_ai_car_debug(screen_bgr, "pass", boxes=boxes, candidate=candidate, reason="pass", click=click_local, force=True)
@@ -743,6 +755,7 @@ def select_new_consumable_car_from_list(self):
                 pos_target = self.wait_for_new_consumable_car(
                     timeout=float(self.config.get("ai_target_confirm_timeout", 0.70)),
                     interval=sample_interval,
+                    min_ai_samples=2,
                 )
 
         if pos_target:

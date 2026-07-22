@@ -121,20 +121,57 @@ class YoloSelectionTests(unittest.TestCase):
         self.assertEqual(candidate["car"]["x1"], 100)
         self.assertLess(candidate["score"], 0.99)
 
-    def test_same_visual_row_ignores_small_vertical_box_jitter(self):
-        left = {
+    def test_left_column_is_chosen_before_an_upper_right_candidate(self):
+        boxes = [
+            make_box("car", 900, 300, 1150, 500, 0.70),
+            make_box("new", 1100, 450, 1130, 480, 0.97),
+            make_box("b600", 1060, 455, 1100, 485, 0.70),
+            make_box("car", 1170, 100, 1435, 300, 0.91),
+            make_box("new", 1390, 250, 1420, 280, 0.95),
+            make_box("b600", 1350, 255, 1390, 285, 0.61),
+        ]
+        candidate, _ = find_yolo_car_candidate(
+            CandidateHarness(),
+            np.zeros((900, 1600, 3), dtype=np.uint8),
+            boxes,
+        )
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["car"]["x1"], 900)
+        self.assertEqual(candidate["column_candidate_count"], 1)
+
+    def test_rejected_top_candidate_falls_back_to_valid_lower_candidate(self):
+        boxes = [
+            make_box("car", 400, 100, 600, 250, 0.89),
+            make_box("new", 540, 190, 560, 210, 0.95),
+            make_box("b600", 525, 195, 545, 215, 0.54),
+            make_box("car", 400, 300, 600, 450, 0.69),
+            make_box("new", 540, 390, 560, 410, 0.98),
+            make_box("b600", 525, 395, 545, 415, 0.74),
+        ]
+        candidate, _ = find_yolo_car_candidate(
+            CandidateHarness(),
+            np.zeros((600, 1000, 3), dtype=np.uint8),
+            boxes,
+        )
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["car"]["y1"], 300)
+        self.assertEqual(candidate["linked_candidate_count"], 2)
+        self.assertEqual(candidate["candidate_count"], 1)
+
+    def test_same_visual_column_ignores_small_horizontal_box_jitter(self):
+        upper = {
             "tag": make_box("new", 240, 194, 260, 214, 0.70),
             "car": make_box("car", 100, 100, 300, 250, 0.70),
             "score": 0.70,
         }
-        right = {
-            "tag": make_box("new", 540, 190, 560, 210, 0.99),
-            "car": make_box("car", 400, 100, 600, 250, 0.99),
+        lower = {
+            "tag": make_box("new", 244, 394, 264, 414, 0.99),
+            "car": make_box("car", 104, 300, 304, 450, 0.99),
             "score": 0.99,
         }
-        selected, row_count = choose_yolo_candidate_visual_order([right, left])
-        self.assertIs(selected, left)
-        self.assertEqual(row_count, 2)
+        selected, column_count = choose_yolo_candidate_visual_order([lower, upper])
+        self.assertIs(selected, upper)
+        self.assertEqual(column_count, 2)
 
 
 if __name__ == "__main__":
